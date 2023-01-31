@@ -1,0 +1,13 @@
+{
+  "name": "doculord",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "dependencies": {
+    "typescript": "next"
+  },
+  "devDependencies": {
+    "tsx": "^3.12.2"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "crdt",
+  "module": "index.ts",
+  "type": "module",
+  "dependencies": {
+    "@automerge/automerge": "^2.0.1",
+    "@docucache/docucache": "*"
+  }
+}
