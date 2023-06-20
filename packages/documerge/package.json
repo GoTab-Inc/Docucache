@@ -1,9 +1,19 @@
 {
-  "name": "crdt",
-  "module": "index.ts",
+  "name": "@docucache/documerge",
+  "version": "0.0.1",
+  "description": "Docucache + Automerge",
+  "exports": {
+    ".": {
+      "import": "./src/index.mjs",
+      "require": "./src/index.js"
+    }
+  },
   "type": "module",
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir ./dist --format esm --external '*'"
+  },
   "dependencies": {
-    "@automerge/automerge": "^2.0.1",
-    "@docucache/docucache": "*"
+    "@automerge/automerge": "^2.0.3",
+    "@docucache/docucache": "workspace:*"
   }
 }

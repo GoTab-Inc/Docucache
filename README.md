@@ -20,3 +20,17 @@ Doculord borrows ideas from great works such as apollo/client, pouchdb, trpc, gr
 
 - Offline-mode - Detect (or manually set) when network connection is offline and handle offline requests.
 
+## Development
+
+Doculord is developed as a typescript library using Bun for workspace and package management.
+
+First [install bun](https://bun.sh/docs/installation).
+
+Then in the root of the project, run
+
+```sh
+bun install
+```
+
+Most development is test-driven.
+

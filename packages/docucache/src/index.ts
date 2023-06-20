@@ -12,6 +12,7 @@ type DocucacheInitOptions = {
   idFields?: string[];
   typeFields?: string[];
   policies?: CachePolicies;
+  autoRemoveOrphans?: boolean;
 }
 
 type DocucacheWrapOptions = {
@@ -20,6 +21,8 @@ type DocucacheWrapOptions = {
   // A function that is called when the update fails. Generally used to rollback optimistic changes.
   rollback?: boolean | (() => void);
 }
+
+const NotCachedSymbol = Symbol('NotCached');
 
 function defaultCacheIdGetter(document: Record<string, string>, type: string, idFields: string[]): string {
   const id = idFields.map(field => document[field] ?? '').join('+');
@@ -40,6 +43,14 @@ function defaultCacheTypeGetter(document: Record<string, string>, typeFields: st
   return typeFields.map(field => document[field]).find(Boolean) ?? id?.match(/^([^:]+):/)?.[1];
 }
 
+function toType(obj: any) {
+  if(typeof obj === 'string') {
+    return obj;
+  }
+  // TODO: Construct a util.inspect-like string representation of the object type
+  return Object.prototype.toString.call(obj).slice(8, -1);
+}
+
 export class Docucache {
 
   private cache: Map<string, Document> = new Map();
@@ -50,22 +61,30 @@ export class Docucache {
 
   private getCacheType: (document: any, typeFields: string[], idFields: string[]) => string;
 
+  // Holds statistics by type such as size, refs, 
+  private stats = new Map<string, any>();
+
   private trackStack: Set<string>[] = [];
 
   private idFields: string[];
 
   private typeFields: string[];
+
+  private autoRemoveOprhans: boolean;
+
   
   constructor({
     getCacheType = defaultCacheTypeGetter,
     policies = {},
     typeFields = ['__typename', '_type'],
     idFields = ['_id'],
+    autoRemoveOrphans = false,
   } = {} as DocucacheInitOptions) {
     this.getCacheType = getCacheType;
     this.policies = policies;
     this.idFields = idFields;
     this.typeFields = typeFields;
+    this.autoRemoveOprhans = autoRemoveOrphans;
   }
 
   /**
@@ -86,12 +105,63 @@ export class Docucache {
     return !!this.getCacheType(obj, this.typeFields, this.idFields);
   }
 
+  /**
+   * Given a document or object, try to determine the cacheId
+   */
   private getCacheId(document: Document) {
     const {idFields} = this;
     const type = this.getCacheType(document, this.typeFields, this.idFields);
     const policy = this.policies[type];
     return policy?.getCacheId?.(document, type, policy.idFields ?? idFields) 
       ?? defaultCacheIdGetter(document, type, idFields);
+  }
+
+  private getShape(obj: any) {
+    if(typeof obj !== 'object') {
+      return typeof obj;
+    }
+    const isArray = Array.isArray(obj);
+    if(isArray) {
+      const document = obj.find(d => this.isDocumentOrRef(d));
+      const isHomogenous = document && obj.every(d => this.isDocumentOrRef(d));
+      if(isHomogenous) {
+        return [this.resolveType(document)]
+      }
+    }
+    const result = Object.entries(obj).reduce((shape, [key, value]) => {
+      const isMetaKey = this.typeFields.includes(key) || this.idFields.includes(key)
+      if(isMetaKey) {
+        return shape;
+      }
+      shape[key] = this.isDocumentOrRef(value) 
+        ? this.resolveType(value)
+        : this.getShape(value);
+      return shape;
+    }, isArray ? [] : {});
+    if(isArray) {
+      const isHomogenous = Object.values(result).every(value => value === result[0]);
+      return isHomogenous 
+        ? `${result[0]}[]`
+        : result;
+    }
+    return result;
+  }
+
+  private isDocumentOrRef(doc: Document | string) {
+    if(typeof doc === 'string') {
+      const regex = /^(__ref:)?([^:]+):/;
+      return regex.test(doc);
+    }
+    return !!this.getCacheType(doc, this.typeFields, this.idFields);
+  }
+
+  private resolveType(obj: Document | string) {
+    if(typeof obj === 'string') {
+      const regex = /^(__ref:)?([^:]+):/;
+      const match = obj.match(regex);
+      return match?.[2] ?? null;
+    }
+    return this.getCacheType(obj, this.typeFields, this.idFields);
   }
 
   /**
@@ -157,10 +227,21 @@ export class Docucache {
    */
   add<T extends object>(document: Document<T>) {
     const id = this.getCacheId(document);
+    const type = this.getCacheType(document, this.typeFields, this.idFields);
     const normalized = this.normalize(document);
     const current = this.cache.get(id);
     const newValue = Object.assign(current ?? {}, normalized);
     this.cache.set(id, newValue);
+    // TODO: this should be a function or class with configurable behavior
+    const stats = this.stats.get(type) ?? {
+      size: 0,
+      refs: new Set<string>(),
+      shape: this.getShape(normalized),
+    }
+    stats.size += 1;
+    stats.refs.add(id);
+    this.stats.set(type, stats);
+    console.log({stats});
   }
 
   /**
@@ -230,6 +311,14 @@ export class Docucache {
   }
 
   /**
+   * Remove a 
+   * @param id 
+   */
+  private removeIfOprhaned(id: string) {
+
+  }
+
+  /**
    * Clear this cache and reset it to an empty state.
    */
   clear() {
@@ -258,19 +347,32 @@ export class Docucache {
   /**
    * Returns a denormalized version of an object, potentially resolving references.
    */
-  denormalize(obj: object) {
+  private denormalize(obj: object) {
     if(typeof obj !== 'object' || !obj) {
       return obj;
     }
-    return Object.entries(obj).reduce((acc, [key, value]) => {
+    const result = Object.entries(obj).reduce((acc, [key, value]) => {
       if(typeof value === 'string' && value.startsWith('__ref:')) {
         const id = value.slice('__ref:'.length);
-        acc[key] = this.get(id);
+        acc[key] = this.get(id) ?? NotCachedSymbol;
       } else {
         acc[key] = this.denormalize(value);
       }
       return acc;
     }, Array.isArray(obj) ? [] : {});
+    // For arrays we want to filter out any NotCachedSymbol values
+    if(Array.isArray(result)) {
+      return result.filter(item => item !== NotCachedSymbol);
+    }
+    // For objects we will nullify any NotCachedSymbol values
+    if(typeof result === 'object') {
+      for(const key in result) {
+        if(result[key] === NotCachedSymbol) {
+          result[key] = null;
+        }
+      }
+    }
+    return result;
   }
 
   /**

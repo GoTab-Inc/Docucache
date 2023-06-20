@@ -1,135 +1,132 @@
-import * as z from 'zod';
-import {reactive, Reactive} from './reactively';
+import CallableInstance from 'callable-instance';
 
-interface Schema {
-  parse: (data: any) => any;
+import type {Filter} from './query';
+
+type DocumentSchemaType<T> = T extends {parse: (...args: any[]) => infer U} ? U : T;
+
+type ApplyFunction<T> = (doc: DocumentSchemaType<T>) => Promise<void> | void;
+
+type AcceptableSchema = {parse: (...args: any[]) => any} | object;
+
+export interface ObservableAdapter<T> {
+  getSnapshot(doc: T): Promise<T>;
+  getMutable(doc: T): Promise<T>;
+  subscribe(doc: T, fn: (doc: T) => void): () => void;
 }
 
-type TriggerContext<T> = {}
-
-interface Trigger<T> {
-  before?: (ctx: TriggerContext<T>) => any;
-  after?: (ctx: TriggerContext<T>) => any;
-  watch?: (keyof T)[];
+interface DocumentOptions<TSchema extends AcceptableSchema, TContext = any> {
+  schema?: TSchema;
+  adapter?: ObservableAdapter<DocumentSchemaType<TSchema>>;
+  defaultContext?: TContext;
 }
 
-type Operation<T> = (...args: any[]) => any;
 
-interface DocumentConfig<T, Ops = {[key: string]: Operation<T>}> {
-  schema?: Schema;
-  parse?: (data: T) => any;
-  operations?: Ops;
-  triggers?: Trigger<T>[];
-}
+class ActionTrigger<TSchema> {
+  condition: any;
 
-interface Constructor<M> {
-  new (...args: any[]): M
-}
+  applyFn: string | ApplyFunction<TSchema>;
 
-export function Document<T, Ops = {[key: string]: Operation<T>}>(
-  {
-    schema = {parse: (data) => data},
-    operations,
-    triggers = [],
-  }: DocumentConfig<T> = {},
-) {
-  class Doc {
-    private doc: T;
+  preApplyFn: string | ApplyFunction<TSchema>;
 
-    private initialize(data: T) {
-      const parsed = schema.parse(data);
-      this.doc = parsed;
-      Object.keys(parsed).forEach((key) => {
-        Object.defineProperty(this, key, {
-          get: () => {
-            if(!(this.doc[key] instanceof Reactive)) {
-              this.doc[key] = reactive(this.doc[key]);
-            }
-            return this.doc[key].get();
-          },
-          set: (value) => {
-            if(!(this.doc[key] instanceof Reactive)) {
-              this.doc[key] = reactive(this.doc[key]);
-            }
-            this.doc[key].set(value);
-          },
-        });
-      });
-      // Set up the triggers
-      triggers.forEach((trigger) => {
-        reactive(() => {
-          const updates: any = {}
-          for(const key of trigger.watch) {
-            updates[key] = (this.doc[key] as Reactive<T[keyof T]>).get(); 
-          }
-          return {
-            current: this.toObject(), 
-            updates: {...this.toObject(), ...updates}
-          };
-        });
-      });
-    }
+  postApplyFn: string | ApplyFunction<TSchema>;
 
-    private runTriggers() {
+  rollbackFn: string | ApplyFunction<TSchema>;
 
-    }
+  retryOpts: any; // TODO: type this properly later
 
-    toObject(): T {
-      return JSON.parse(JSON.stringify(this.doc));
-    }
-
-    transaction(fn) {
-      // TODO: grab a snapshot from docucache
-      // run the function
-      fn();
-      // start a transaction
-    }
-    
-    static from<U extends Doc>(this: Constructor<U>, data: T) {
-      const doc = new this();
-      doc.initialize(data);
-      return doc as U & T & Ops;
-    }
+  when(filter: Filter<DocumentSchemaType<TSchema>>) {
+    this.condition = filter;
+    return this;
   }
-  // Add operations to class prototype
-  Object.keys(operations || {}).forEach((key) => {
-    Doc.prototype[key] = function(...args: any[]) {
-      // Runs operations in a reactive context (note that this should _not_ be async)
-      return operations[key].call(this, ...args);
-    };
-  });
-  return Doc;
+
+  preApply(fnOrRef: string | ApplyFunction<TSchema>) {
+    this.preApplyFn = fnOrRef;
+    return this;
+  }
+
+  apply(fnOrRef: string | ApplyFunction<TSchema>) {
+    this.applyFn = fnOrRef;
+    return this;
+  }
+
+  postApply(fnOrRef: string | ApplyFunction<TSchema>) {
+    this.postApplyFn = fnOrRef;
+    return this;
+  }
+
+  rollback(fnOrRef?: string | ApplyFunction<TSchema>) {
+    this.rollbackFn = fnOrRef ?? 'default';
+    return this;
+  }
+
+  retry(numRetries: number, retryStrategy?: {delay?: number, backoff?: number, type?: string} | number) {
+    if(typeof retryStrategy === 'number') {
+      retryStrategy = {delay: retryStrategy, backoff: 1500, type: 'exponential'};
+    }
+    this.retryOpts = {numRetries, retryStrategy};
+    return this;
+  }
 }
 
-const PostSchema = z.object({
-  _id: z.string(),
-  name: z.string(),
-  likes: z.number().default(0),
-});
+class DocumentInstance<TSchema extends AcceptableSchema, TContext = any> {
+  constructor(
+    public document: DocumentHandler<TSchema>,
+    public data: DocumentSchemaType<TSchema>,
+    public context: TContext = document.defaultContext
+  ) {
+  }
 
-const Post = Document<z.infer<typeof PostSchema>>({
-  schema: PostSchema,
-  operations: {
-    addLike() {
-      console.log(this);
-      console.log('liked');
-      return true;
-    }
-  },
-  triggers: [
+  snapshot() {
+
+  }
+
+  mutable() {
+
+  }
+
+  subscribe() {
+
+  }
+
+  set() {
+
+  }
+
+  // Get a new instance of this document with a different context value
+  withContext<T>(context: T) {
+    return new DocumentInstance<TSchema, T>(this.document, this.data, context);
+  }
+}
+
+class DocumentHandler<TSchema extends AcceptableSchema, TContext = any> extends CallableInstance<[DocumentSchemaType<TSchema>], DocumentInstance<TSchema, TContext>> {
+  triggers: Map<string, ActionTrigger<TSchema>> = new Map();
+
+  defaultContext: TContext;
+
+  schema?: {parse: (...any: any[]) => any};
+
+  constructor(
     {
-      watch: ['likes'],
-      before() {
-        console.log('before', this.toObject())
-      },
-      after() {
-        console.log('after', this.toObject())
-      }
-    }
-  ]
-});
+      schema,
+      defaultContext
+    } : DocumentOptions<TSchema, TContext> = {}
+    ) {
+    super('from');
+    this.defaultContext = defaultContext;
+    this.schema = (schema as any);
+  }
 
-const post = Post.from({_id: 'string', name: 'Generic Pet'});
+  action(actionName: string) {
+    const trigger = new ActionTrigger<TSchema>();
+    this.triggers.set(actionName, trigger);
+    return trigger;
+  }
 
-const added = post.addLike();
-console.log({added});
+  from(data: DocumentSchemaType<TSchema>) {
+    return new DocumentInstance(this, data);
+  }
+}
+
+export function Document<TSchema extends AcceptableSchema, TContext = any>(options?: DocumentOptions<TSchema, TContext>) {
+  return new DocumentHandler<TSchema, TContext>(options);
+}

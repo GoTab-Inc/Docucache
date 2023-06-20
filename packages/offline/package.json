@@ -1,5 +1,5 @@
 {
-  "name": "@restfulls/offline-buffer",
+  "name": "@docucache/offline-buffer",
   "module": "index.ts",
   "type": "module",
   "devDependencies": {

@@ -1,107 +1,139 @@
 # Doculord
 
-Doculord is a little framework for creating type-safe client-side document-based local-first collaborative applications.
+Doculord is a small library for creating type-safe client-side document-based local-first collaborative applications.
 
 Doculord extends the declarative nature of client-side frameworks to resource management. 
 
-The idea is to declare the state that you would like a resource to be in and doculord will carefully figure out how to put your resources in that state using a methodology _you_ define.
-
-Modifications are made on document fields which then get translated into actions that handle automatic optimistic updates w/ rollback, document caching, and syncing between multiple clients with easy conflict resolution.
+Doculor is especially crafted for handling optimistic updating patterns in a framework agnostic manner.
 
 ## Usage
 
-Define a document using the `Document` function by passing in a schema and configurations. 
-A schema is any object that has a `parse` function.
+The idea is to declare the state that you would like a resource to be in and doculord will put your resources in that state using a methodology _you_ define.
 
-```js
-import * as z from 'zod';
-import {Document, Operation} from '@docucache/doculord';
+For example, say you have a `Post` document and you want to add a like to it. Adding a like will call an api endpoint while and optimistically update the value on the frontend. If the update fails the like will be rolled back.
 
-const PetSchema = z.object({
-  _id: z.string(),
-  name: z.string(),
-});
+The magic is in the expressive document action building configuration
 
-const Pet = Document<z.infer<PetSchema>>(
-  PetSchema,
-  {
-    operations: {
-      updateUser: Operation(),
-    },
-  }
-);
+```ts
+import {Document} from '@docucache/doculord';
+
+const Post = Document<{name: string, likes: 0, isLikedByMe: boolean}>();
+
+Post.action('incrementLike') // A name for the action plus additional context such as a controller
+  .when({isLikedByMe: {equalTo: true}}) // the trigger condition
+  .preApply((post) => {
+    return {...post: like: post.likes + 1};
+  }) // perform additional optimistic updates when triggered (it's ideal not to trigger other actions)
+  .apply(async ({name}) => {
+    const response = await fetch(`api/posts/${name}/add-like`);
+    if(!response.ok) {
+      throw new Error();
+    }
+    // Feel free to update other documents here if you need to
+  })
+  .rollback() // no arg = default rollback (undo all changes made in preApply and apply)
+  .retry(4, 1000) // if the response fails, queue a number of retries with a linear 1 second delay
 ```
 
-Alternatively you can extend the result of Document if you prefer a more Object-Oriented approach.
-
-In this case, you can use decorators to define operations.
+Now to trigger the update, this is all you need to do:
 
 ```js
-class Pet extends Document<z.infer<PetSchema>>() {
-
-}
+post.isLikedByMe = true;
 ```
 
-### Operations
+### creating documents
 
-An operation is an action that gets taken when fields are updated. Operations take an updater function and configurations that determine when and how the operation will run. Properties include
+The object returned from a call to `Document` is a function that accepts an object and returns a document store.
 
-- `when` - An array of keys on the object in which to detect changes _or_ a predicate function that when `true` will run the operation.
-- `group` - When `true` will only run the operation if the group is 
+```js
+const post = Document({name: 'Why documents are awesome'});
+```
+
+Subscribe to changes in the store by calling `store.subscribe`.
+Set a value in the store by calling `store.set`.
+Get a snapshot state from the current state of the store by calling `store.snapshot`. 
 
 ### Loading states
 
-Doculord maintains a global queue that contains information about all ongoing operations.
-At any point in time you can await for a document to finish be modified by calling await on the document itself.
+Each store maintains a queue of ongoing operations. To wait for a store to finish operating, await the store itself after performing an update.
 
 ```js
-post.title = 'Another title';
+post.isLikedByMe = true;
+await post; // waits until the most recent update is finished. Returns a snapshot of the post
 ```
 
-## Examples
+### Mobx/Redux compatability
 
-The most basic example would be updating a value. For example, adding a like to a post.
+By default doculord uses reactively as the reactive system, however this can be configured with an observability adapter.
+
+This adapter is really just an object with a method for making/de-making an observable object and a method for subscribing.
 
 ```js
-import * as zod from 'zod';
+import {toJS, observe} from 'mobx';
 
-const Post = Document<{_id: string, name: string, likes: number}>({
-  operations: {
-    updateLikes: Operation(
-      async (ctx) => {
-        // Perform an optimistic update
-        ctx.optimistic.likes = ctx.current.likes;
-        // Do the actual request
-        const response = await fetch(`/api/posts/${ctx.current._id}`);
-        if(!response.ok) {
-          throw new Error('Unable to add a like!');
-        }
-      },
-      ['likes']
-    ),
+const Post = new Document({
+  adapter: {
+    // Should return an imuttable object
+    makeSnapshot(obj) {
+      return toJS(obj);
+    },
+    // Should return a mutable object. Not every adapter will use this method
+    getObservable(obj) {
+      return makeAutoObservable(obj)
+    },
+    // Called for each registered action
+    subscribe(observable, properties, fn) {
+      return observe(observable, fn);
+    }
   }
 });
 
-const post = Post.from({name: 'Why Documents are magic', likes: 0});
+const postStore = Post({...});
+const post = postStore.mutable(); // A mobx store
+post.likedByMe = true; // if post is an observable, then this is expected to automatically trigger updates, but
+postStore.set(post); // this is an alternative way of triggering an update if the framework requires it
+```
 
-async function addLike() {
-  if(post.isLikedByMe) {
-    return false;
-  }
-  post.transaction(() => {
-    post.likes++;
+### Integrating with existing mutation functions
+
+It may be the case that you already have methods for mutating your objects defined in a class somewhere and it'd be a big hassle to move the method into the document action.
+
+When creating a document store, you can optionally add attach a context to the store which can contain functions and other properties.
+
+
+```js
+
+const Post = Document({
+  context: MyPostsController
+});
+
+// Pass in a string to apply and it will try to find a function by that name in the context and call it 
+Post.action('incrementLike')
+  .when({isLikedByMe: {becomes: true}})
+  .apply('likePost');
+
+// withContext sets the value of `this` to the context itself
+Post.action('decrementLike')
+  .apply(function (post) {
+    console.log(this); // MyPostsController
   });
+
+class MyPostsController {
+  async getPost(): Post {
+    const response = await fetch(...);
+    const data = await response.json();
+    const store = Post(data).withContext(this);
+    post = store.mutable();
+    return post;
+  }
+
+  // Automatically called
+  likePost(post) {
+    await fetch(...);
+  }
+
 }
 
-```
-
-Sometimes you need to modify multiple resources at the same time. This can be done using a transaction.
-
-```js
-import {transaction} from 'transactions';
-transaction(() => {
-  
-});
 ```
 
 ### Usage with tanstack/query

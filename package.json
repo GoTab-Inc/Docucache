@@ -7,7 +7,7 @@
   "dependencies": {
     "typescript": "next"
   },
-  "devDependencies": {
-    "tsx": "^3.12.2"
+  "engines": {
+    "bun": ">=0.5.8"
   }
 }
