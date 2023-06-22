@@ -25,21 +25,23 @@ const traversals = {
   $or: (...results: boolean[]) => results.some(result => !!result),
 }
 
-export type PrimitiveFilter<T> = {[key in keyof Pick<typeof comparitors, '$eq' | '$neq'>]?: T} & {'$exists'?: boolean, '$in'?: T[], '$nin'?: T[]} &
-(
+type TraversalFilter<T> = {[key in keyof typeof traversals]?: Filter<T>[]};
+
+type BaseFilter<T> = {[key in keyof Pick<typeof comparitors, '$eq' | '$neq'>]?: T} & {'$exists'?: boolean, '$in'?: T[], '$nin'?: T[]}
+
+type PrimitiveFilter<T> =
   T extends number ? {[key in keyof Pick<typeof comparitors, '$eq' | '$neq' | '$gt' | '$gte' | '$lt' | '$lte' | '$between'>]?: number} :
   T extends string ? ({[key in keyof Pick<typeof comparitors, '$eq' | '$neq' | '$like' | '$contains' | '$startsWith' | '$endsWith'>]?: string} & {'$matches'?: RegExp}) :
   T extends boolean ? {[key in keyof Pick<typeof comparitors, '$eq' | '$neq'>]?: boolean} :
   // Unknown type - allow all comparitors
-  {[key in keyof Omit<typeof comparitors, '$eq' | '$neq' | '$exists'>]?: T}
-);
+  {[key in keyof Omit<typeof comparitors, '$eq' | '$neq' | '$exists'>]?: T};
+
+export type ObjFilter<T> = BaseFilter<T> & TraversalFilter<T> & PrimitiveFilter<T>;
 
 export type Filter<TObj> =
   TObj extends Primitive 
-    ? TObj | PrimitiveFilter<TObj>
-    : { 
-      [P in keyof TObj]?: Filter<TObj[P]>
-    };
+    ? TObj | ObjFilter<TObj>
+    : ObjFilter<TObj> & { [P in keyof TObj]?: Filter<TObj[P]> };
 
 
 export function test<T>(obj: T, filter: Filter<T>): boolean {
@@ -53,7 +55,12 @@ export function test<T>(obj: T, filter: Filter<T>): boolean {
     if(key in comparitors) {
       const comparitor = comparitors[key as keyof typeof comparitors];
       return comparitor(value, obj);
-    } 
+    }
+    if(key in traversals) {
+      console.log({obj, value});
+      const traversal = traversals[key as keyof typeof traversals];
+      return traversal(...(value as any[]).map((subFilter: any) => test(obj, subFilter)));
+    }
     return comparitors.$eq(obj[key], value);
   });
 }

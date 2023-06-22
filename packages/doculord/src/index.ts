@@ -2,24 +2,19 @@ import CallableInstance from 'callable-instance';
 
 import type {Filter} from './query';
 
+import type {ObservableAdapter} from './adapters/types';
+
 type DocumentSchemaType<T> = T extends {parse: (...args: any[]) => infer U} ? U : T;
 
 type ApplyFunction<T> = (doc: DocumentSchemaType<T>) => Promise<void> | void;
 
 type AcceptableSchema = {parse: (...args: any[]) => any} | object;
 
-export interface ObservableAdapter<T> {
-  getSnapshot(doc: T): Promise<T>;
-  getMutable(doc: T): Promise<T>;
-  subscribe(doc: T, fn: (doc: T) => void): () => void;
-}
-
 interface DocumentOptions<TSchema extends AcceptableSchema, TContext = any> {
   schema?: TSchema;
-  adapter?: ObservableAdapter<DocumentSchemaType<TSchema>>;
+  adapter?: ObservableAdapter;
   defaultContext?: TContext;
 }
-
 
 class ActionTrigger<TSchema> {
   condition: any;
@@ -76,20 +71,25 @@ class DocumentInstance<TSchema extends AcceptableSchema, TContext = any> {
   ) {
   }
 
-  snapshot() {
+  private runTriggers() {
 
+  }
+
+  snapshot() {
+    return this.document.adapter.getSnapshot(this.data);
   }
 
   mutable() {
-
+    return this.document.adapter.getMutable(this.data);
   }
 
   subscribe() {
-
+    this.document.adapter.subscribe(this.mutable(), () => this.runTriggers());
   }
 
-  set() {
-
+  set(setter) {
+    const mutable = this.mutable();
+    const result = setter(mutable) ?? mutable;
   }
 
   // Get a new instance of this document with a different context value
@@ -103,17 +103,21 @@ class DocumentHandler<TSchema extends AcceptableSchema, TContext = any> extends 
 
   defaultContext: TContext;
 
+  adapter: ObservableAdapter;
+
   schema?: {parse: (...any: any[]) => any};
 
   constructor(
     {
       schema,
-      defaultContext
+      defaultContext,
+      adapter,
     } : DocumentOptions<TSchema, TContext> = {}
     ) {
     super('from');
     this.defaultContext = defaultContext;
     this.schema = (schema as any);
+    this.adapter = adapter; // or use the defaultAdapter
   }
 
   action(actionName: string) {
@@ -123,7 +127,10 @@ class DocumentHandler<TSchema extends AcceptableSchema, TContext = any> extends 
   }
 
   from(data: DocumentSchemaType<TSchema>) {
-    return new DocumentInstance(this, data);
+    const instance = new DocumentInstance(this, data);
+    // Subsribe to the document
+    
+    return instance
   }
 }
 

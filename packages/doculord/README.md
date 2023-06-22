@@ -41,6 +41,10 @@ Now to trigger the update, this is all you need to do:
 post.isLikedByMe = true;
 ```
 
+### Detecting conflicts
+
+Use the `checkConflicts` method when initiating an action. If this function throws or returns anything other than `true` or `undefined` then the request will be rolled back with the result of the method call as the reason for the rollback. 
+
 ### creating documents
 
 The object returned from a call to `Document` is a function that accepts an object and returns a document store.
@@ -136,6 +140,9 @@ class MyPostsController {
 
 ```
 
-### Usage with tanstack/query
+## When should I apply optimistic updates
 
-tanstack/query does not necessarily care about _how_ properties are updated
+There are 3 situations where you _don't_ want to 
+1. The API is _really_ slow
+  - The user would have time to navigate elsewhere and probably lose any changes they made
+  - This can also be solved by queuing requests and handling them later or handling them in a service worker
