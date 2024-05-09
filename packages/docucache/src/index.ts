@@ -1,3 +1,6 @@
+import type { Store } from './stores';
+import { MemoryStore } from './stores/mem';
+
 export type Document<T extends object = {}> = T;
 
 export type CachePolicy = {
@@ -8,7 +11,7 @@ export type CachePolicy = {
 type CachePolicies = Record<string, CachePolicy>;
 
 type DocucacheInitOptions = {
-  getCacheType?: (document: Document) => string;
+  getDocumentType?: (document: Document) => string;
   idFields?: string[];
   typeFields?: string[];
   policies?: CachePolicies;
@@ -20,6 +23,11 @@ type DocucacheWrapOptions = {
   optimistic?: (() => any) | object;
   // A function that is called when the update fails. Generally used to rollback optimistic changes.
   rollback?: boolean | (() => void);
+}
+
+type StoreResolveOpts = {
+  throwIfMissing?: boolean;
+  onMissingValue?: (id: string) => Promise<any>;
 }
 
 const NotCachedSymbol = Symbol('NotCached');
@@ -53,34 +61,29 @@ function toType(obj: any) {
 
 export class Docucache {
 
-  private cache: Map<string, Document> = new Map();
-
-  private optCache: Map<string, Document> = new Map();
+  private store: Store = new MemoryStore();
 
   private policies: CachePolicies = {};
 
-  private getCacheType: (document: any, typeFields: string[], idFields: string[]) => string;
+  private getDocumentType: (document: any, typeFields: string[], idFields: string[]) => string;
 
   // Holds statistics by type such as size, refs, 
   private stats = new Map<string, any>();
-
-  private trackStack: Set<string>[] = [];
 
   private idFields: string[];
 
   private typeFields: string[];
 
   private autoRemoveOprhans: boolean;
-
   
   constructor({
-    getCacheType = defaultCacheTypeGetter,
+    getDocumentType = defaultCacheTypeGetter,
     policies = {},
     typeFields = ['__typename', '_type'],
     idFields = ['_id'],
     autoRemoveOrphans = false,
   } = {} as DocucacheInitOptions) {
-    this.getCacheType = getCacheType;
+    this.getDocumentType = getDocumentType;
     this.policies = policies;
     this.idFields = idFields;
     this.typeFields = typeFields;
@@ -90,8 +93,8 @@ export class Docucache {
   /**
    * The size of the cache
    */
-  get size() {
-    return this.cache.size;
+  size() {
+    return this.store.size();
   }
 
   /**
@@ -102,18 +105,17 @@ export class Docucache {
     if(!obj || Array.isArray(obj) || typeof obj !== 'object') {
       return false;
     }
-    return !!this.getCacheType(obj, this.typeFields, this.idFields);
+    return !!this.getDocumentType(obj, this.typeFields, this.idFields);
   }
 
   /**
    * Given a document or object, try to determine the cacheId
    */
   private getCacheId(document: Document) {
-    const {idFields} = this;
-    const type = this.getCacheType(document, this.typeFields, this.idFields);
+    const type = this.getDocumentType(document, this.typeFields, this.idFields);
     const policy = this.policies[type];
-    return policy?.getCacheId?.(document, type, policy.idFields ?? idFields) 
-      ?? defaultCacheIdGetter(document, type, idFields);
+    return policy?.getCacheId?.(document, type, policy.idFields ?? this.idFields) 
+      ?? defaultCacheIdGetter(document, type, this.idFields);
   }
 
   private getShape(obj: any) {
@@ -152,7 +154,7 @@ export class Docucache {
       const regex = /^(__ref:)?([^:]+):/;
       return regex.test(doc);
     }
-    return !!this.getCacheType(doc, this.typeFields, this.idFields);
+    return !!this.getDocumentType(doc, this.typeFields, this.idFields);
   }
 
   private resolveType(obj: Document | string) {
@@ -161,7 +163,7 @@ export class Docucache {
       const match = obj.match(regex);
       return match?.[2] ?? null;
     }
-    return this.getCacheType(obj, this.typeFields, this.idFields);
+    return this.getDocumentType(obj, this.typeFields, this.idFields);
   }
 
   /**
@@ -180,58 +182,52 @@ export class Docucache {
   /**
    * Resolve a reference to a document
    */
-  resolveRef(ref: string) {
+  resolveRef<T extends object>(ref: string, opts: StoreResolveOpts = {}) {
     if(!ref.startsWith('__ref:')) {
       return null;
     }
     const id = ref.slice('__ref:'.length);
-    return this.get(id);
+    return this.resolve<T>(id, opts);
   }
   
   /**
-   * Gets a document from the cache.
+   * Resolves a document from the cache using the store.
+   * The document will be denormalized and references will be resolved as well.
    */
-  get<T extends object>(id: string) {
-    if(!this.cache.has(id)) {
+  async resolve<T extends object>(id: string, opts: StoreResolveOpts = {}): Promise<T> {
+    if(!(await this.store.has(id))) {
       return null;
     }
-    this.trackStack.at(-1)?.add(id);
-    return this.denormalize(this.cache.get(id)) as Document<T>;
+
+    return this.denormalize(await this.store.get(id)) as T;
   }
 
   /**
    * Updates a document in the cache. The updater will receive a denormalized version of the document.
    */
-  update<T extends object>(
+  async update<T extends object>(
     document: Document<T> | string, 
     updater: (document: Document<T>) => Document | Document[] | void,
   ) {
     const id = this.resolveId(document);
-    const current = this.denormalize(this.get(id)) as Document<T>;
+    const current = await this.denormalize<Document<T>>(await this.resolve(id));
     const updated = updater(current) ?? current;
-    this.addAll(this.extract(updated));
-  }
-
-  /**
-   * Tracks usage of documents in the cache given a synchronous function.
-   */
-  track<T>(fn: () => T): [T, string[]] {
-    this.trackStack.push(new Set());
-    const result = fn();
-    const ids = this.trackStack.pop();
-    return [result, [...ids]];
+    await this.addAll(this.extract(updated));
   }
 
   /**
    * Add a document to the cache. Document references will be normalized but not automatically added to the cache.
    */
-  add<T extends object>(document: Document<T>) {
+  async add<T extends object>(document: Document<T>) {
     const id = this.getCacheId(document);
-    const type = this.getCacheType(document, this.typeFields, this.idFields);
+    const type = this.getDocumentType(document, this.typeFields, this.idFields);
     const normalized = this.normalize(document);
-    const current = this.cache.get(id);
+    const current = await this.store.get(id);
+    // Note: this is where cache object merging happens. It might be better to complicate this logic
+    // so that it can be custom. For example, replace instead of mergeing. We can also add events for when the document is first added to the store
+    // by simply detecting if a current value exists already
     const newValue = Object.assign(current ?? {}, normalized);
-    this.cache.set(id, newValue);
+    await this.store.set(id, newValue);
     // TODO: this should be a function or class with configurable behavior
     const stats = this.stats.get(type) ?? {
       size: 0,
@@ -241,14 +237,17 @@ export class Docucache {
     stats.size += 1;
     stats.refs.add(id);
     this.stats.set(type, stats);
-    console.log({stats});
   }
 
   /**
    * Add multiple documents to the cache
    */
-  addAll(documents: Document[]) {
-    documents.forEach(document => this.add(document));
+  async addAll(documents: Document[]) {
+    // Should this serial or parallel?
+    // With parallel we might run into memory issues
+    for(const document of documents) {
+      await this.add(document);
+    }
   }
 
   /**
@@ -270,7 +269,7 @@ export class Docucache {
    * Extracts the documents from the given object, no matter how deeply nested, and adds them to the cache.
    */
   extractAndAdd(obj: any) {
-    this.addAll(this.extract(obj));
+    return this.addAll(this.extract(obj));
   }
 
   private extractAndAddOptimistic(obj: any) {
@@ -281,23 +280,21 @@ export class Docucache {
    * Add an object to the cache and treat it as a document. Useful for caching the result of an HTTP request.
    * Note that this will not merge the object with the existing document and will overwrite it instead.
    */
-  addAsDocument(obj: any, key: string) {
-    this.extractAndAdd(obj);
-    this.cache.set(key, this.normalize(obj));
+  async addAsDocument(obj: any, key: string) {
+    await this.extractAndAdd(obj);
+    await this.store.set(key, this.normalize(obj));
   }
 
   /**
    * Runs a function and caches the result as a document.
    */
-  fromResult<T>(fn: () => T, key: string): T {
+  async fromResult<T>(fn: () => T, key: string) {
     const result = fn();
     if(result instanceof Promise) {
-      result.then(data => {
-        this.addAsDocument(data, key);
-        return data;
-      });
+      const data = await result;
+      await this.addAsDocument(data, key);
     } else {
-      this.addAsDocument(result, key);
+      await this.addAsDocument(result, key);
     }
     return result;
   }
@@ -307,7 +304,7 @@ export class Docucache {
    */
   remove(obj: Document | string) {
     const id = this.resolveId(obj);
-    return this.cache.delete(id);
+    return this.store.delete(id);
   }
 
   /**
@@ -322,7 +319,7 @@ export class Docucache {
    * Clear this cache and reset it to an empty state.
    */
   clear() {
-    this.cache.clear();
+    return this.store.clear();
   }
 
   /**
@@ -347,22 +344,25 @@ export class Docucache {
   /**
    * Returns a denormalized version of an object, potentially resolving references.
    */
-  private denormalize(obj: object) {
+  private async denormalize<T extends any>(obj: object): Promise<T> {
     if(typeof obj !== 'object' || !obj) {
-      return obj;
+      return obj as T;
     }
-    const result = Object.entries(obj).reduce((acc, [key, value]) => {
+    // TODO: I'm not really a fan of async reduce pattern used here. 
+    // This should be done iteratively instead of recursively and could be made far more efficient. 
+    const result = await Object.entries(obj).reduce(async (aacc, [key, value]) => {
+      const acc = await aacc;
       if(typeof value === 'string' && value.startsWith('__ref:')) {
         const id = value.slice('__ref:'.length);
-        acc[key] = this.get(id) ?? NotCachedSymbol;
+        acc[key] = await this.resolve(id) ?? NotCachedSymbol;
       } else {
-        acc[key] = this.denormalize(value);
+        acc[key] = await this.denormalize(value);
       }
       return acc;
-    }, Array.isArray(obj) ? [] : {});
+    }, Array.isArray(obj) ? Promise.resolve([]) : Promise.resolve({}));
     // For arrays we want to filter out any NotCachedSymbol values
     if(Array.isArray(result)) {
-      return result.filter(item => item !== NotCachedSymbol);
+      return result.filter(item => item !== NotCachedSymbol) as T;
     }
     // For objects we will nullify any NotCachedSymbol values
     if(typeof result === 'object') {
@@ -372,28 +372,24 @@ export class Docucache {
         }
       }
     }
-    return result;
+    return result as T;
   }
 
   /**
    * Returns a JSON-serializable representation of the cache.
    */
   export() {
-    const result: {id: string, document: Document}[] = [];
-    this.cache.forEach((document, id) => {
-      result.push({id, document});
-    });
-    return result;
+    return this.store.export();
   }
 
   /**
    * Import the cache/subset of cache previously exported with `export()`.
    * This will overwrite existing documents should they have the same id.
    */
-  import(items: ReturnType<this['export']>) {
-    items.forEach(({id, document}) => {
-      this.cache.set(id, document);
-    });
+  async import(items: Awaited<ReturnType<this['export']>>) {
+    for(const {id, document} of items) {
+      await this.store.set(id, document);
+    }
   }
 
   /**

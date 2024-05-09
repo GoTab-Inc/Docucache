@@ -10,7 +10,7 @@ describe('Policies', () => {
     expect(documents[0]._id).toBe('User:123');
   });
 
-  it('should use custom cacheId getter', () => {
+  it('should use custom cacheId getter', async () => {
     const cache = new Docucache({
       policies: {
         User: {
@@ -21,8 +21,8 @@ describe('Policies', () => {
       }
     });
     const user = {_id: 'User:123', name: 'John'};
-    cache.extractAndAdd(user);
-    expect(cache.size).toBe(1);
+    await cache.extractAndAdd(user);
+    expect(cache.size()).resolves.toBe(1);
     expect(cache.resolveId(user)).toBe('User:John');
   });
 });
@@ -55,7 +55,7 @@ describe('Extraction', () => {
     expect(documents).toEqual([document]);
   });
 
-  it('can extract deeply nested documents', () => {
+  it('can extract deeply nested documents', async () => {
     const cache = new Docucache();
     const johnHandle = {__typename: 'Handle', _id: '1', value: '@john', type: 'twitter'};
     const jackHandle = {__typename: 'Handle', _id: '2', value: '@john', type: 'instagram'};
@@ -72,25 +72,25 @@ describe('Extraction', () => {
       handle: johnHandle,
     };
     
-    cache.extractAndAdd(john);
+    await cache.extractAndAdd(john);
 
-    expect(cache.get('User:1')).not.toBe(john); // Objects from cache.get should be cloned and not the same as input objects.
-    expect(cache.get('User:1')).toEqual(john);
+    expect(cache.resolve('User:1')).resolves.not.toBe(john); // Objects from cache.resolve should be cloned and not the same as input objects.
+    expect(cache.resolve('User:1')).resolves.toEqual(john);
 
-    expect(cache.get('User:2')).not.toBe(jane); // Objects from cache.get should be cloned and not the same as input objects.
-    expect(cache.get('User:2')).toEqual(jane);
+    expect(cache.resolve('User:2')).resolves.not.toBe(jane); // Objects from cache.resolve should be cloned and not the same as input objects.
+    expect(cache.resolve('User:2')).resolves.toEqual(jane);
 
-    expect(cache.get('Handle:1')).not.toBe(johnHandle); // Objects from cache.get should be cloned and not the same as input objects.
-    expect(cache.get('Handle:1')).toEqual(johnHandle);
+    expect(cache.resolve('Handle:1')).resolves.not.toBe(johnHandle); // Objects from cache.resolve should be cloned and not the same as input objects.
+    expect(cache.resolve('Handle:1')).resolves.toEqual(johnHandle);
 
-    expect(cache.get('Handle:2')).not.toBe(jackHandle); // Objects from cache.get should be cloned and not the same as input objects.
-    expect(cache.get('Handle:2')).toEqual(jackHandle);
+    expect(cache.resolve('Handle:2')).resolves.not.toBe(jackHandle); // Objects from cache.resolve should be cloned and not the same as input objects.
+    expect(cache.resolve('Handle:2')).resolves.toEqual(jackHandle);
 
-    expect(cache.get('Handle:3')).not.toBe(janeHandle); // Objects from cache.get should be cloned and not the same as input objects.
-    expect(cache.get('Handle:3')).toEqual(janeHandle);
+    expect(cache.resolve('Handle:3')).resolves.not.toBe(janeHandle); // Objects from cache.resolve should be cloned and not the same as input objects.
+    expect(cache.resolve('Handle:3')).resolves.toEqual(janeHandle);
   });
 
-  it('should merge objects with the same id', () => {
+  it('should merge objects with the same id', async () => {
     const cache = new Docucache();
 
     const john = {
@@ -106,21 +106,21 @@ describe('Extraction', () => {
       aka: 'John',
     };
 
-    cache.extractAndAdd(john);
-    expect(cache.get<typeof john>('User:1').name).toBe(john.name);
-    expect(cache.get<typeof john2>('User:1').aka).toBeUndefined();
+    await cache.extractAndAdd(john);
+    expect(cache.resolve<typeof john>('User:1')).resolves.toMatchObject({name: john.name});
+    expect(cache.resolve<typeof john2>('User:1')).resolves.not.toContainKey('aka');
 
-    cache.extractAndAdd(john2);
-    expect(cache.get('User:1')).toEqual(john2);
+    await cache.extractAndAdd(john2);
+    expect(cache.resolve('User:1')).resolves.toEqual(john2);
   });
 
-  it('should cache from a function', () => {
+  it('should cache from a function', async () => {
     const cache = new Docucache();
-    const result = cache.fromResult(() => {
+    const result = await cache.fromResult(() => {
       return {data: [{__typename: 'User', _id: '1', name: 'John'}]};
     }, 'query:getUser:1');
-    expect(cache.size).toBe(2);
-    expect(result).toEqual(cache.get('query:getUser:1'));
+    expect(cache.size()).resolves.toBe(2);
+    expect(result).toEqual(await cache.resolve<typeof result>('query:getUser:1'));
   });
 
   it('should cache from an async function', async () => {
@@ -128,13 +128,13 @@ describe('Extraction', () => {
     const result = await cache.fromResult(async () => {
       return {data: [{__typename: 'User', _id: '1', name: 'John'}]};
     }, 'query:getUser:1');
-    expect(cache.size).toBe(2);
-    expect(result).toEqual(cache.get('query:getUser:1'));
+    expect(cache.size()).resolves.toBe(2);
+    expect(result).toEqual(await cache.resolve('query:getUser:1'));
   });
 });
 
 describe('Modification', () => {
-  it('can modify a document', () => {
+  it('can modify a document', async () => {
     const cache = new Docucache();
 
     const john = {
@@ -143,17 +143,17 @@ describe('Modification', () => {
       name: 'John',
     };
 
-    cache.extractAndAdd(john);
-    expect(cache.get<typeof john>('User:1').name).toBe(john.name);
+    await cache.extractAndAdd(john);
+    expect(cache.resolve<typeof john>('User:1')).resolves.toMatchObject({name: john.name});
 
-    cache.update(john, (john) => {
+    await cache.update(john, (john) => {
       john.name = 'Johnny';
     });
 
-    expect(cache.get<typeof john>('User:1').name).toBe('Johnny');
+    expect(cache.resolve<typeof john>('User:1')).resolves.toMatchObject({name: 'Johnny'});
   });
 
-  it('can modify deeply nested documents', () => {
+  it('can modify deeply nested documents', async () => {
     const cache = new Docucache();
 
     const johnHandle = {__typename: 'Handle', _id: '1', value: '@john', type: 'twitter'};
@@ -163,39 +163,40 @@ describe('Modification', () => {
       name: 'John',
       handle: johnHandle,
     };
-    cache.fromResult(() => ({data: {users: [john]}}), 'query:getUsers');
-    cache.update(johnHandle, (handle) => {
+    await cache.fromResult(() => ({data: {users: [john]}}), 'query:getUsers');
+    await cache.update(johnHandle, (handle) => {
       handle.value = '@johnny';
     });
-    expect(cache.get<typeof johnHandle>('Handle:1').value).toBe('@johnny');
-    cache.update(john, (john) => {
+    expect(cache.resolve<typeof johnHandle>('Handle:1')).resolves.toMatchObject({value: '@johnny'});
+    await cache.update(john, (john) => {
       john.handle = {__typename: 'Handle', _id: '2', value: 'johnny', type: 'instagram'};
     });
-    expect(cache.get<typeof johnHandle>('Handle:2').value).toBe('johnny');
+    expect(cache.resolve<typeof johnHandle>('Handle:2')).resolves.toMatchObject({value: 'johnny'});
   });
 
-  it('can remove documents', () => {
+  it('can remove documents', async () => {
     const cache = new Docucache();
     const john = {
       __typename: 'User',
       _id: '1',
       name: 'John',
     };
-    cache.extractAndAdd(john);
-    expect(cache.get('User:1')).toEqual(john);
-    cache.remove(john);
-    expect(cache.get('User:1')).toBeNil();
+    await cache.extractAndAdd(john);
+    expect(cache.resolve('User:1')).resolves.toEqual(john);
+    await cache.remove(john);
+    expect(cache.resolve('User:1')).resolves.toBeNil();
   });
 
   // Removing a document referenced by another document may orphan the document
   // Say you have a document such as: {_id: 'User:1', friends: ['__ref:User:2', '__ref:User:3']} and then removed `__ref:User:3` from the cache.
   // 
-  it('can delete orphaned documents', () => {
+  it('can delete orphaned documents', async () => {
     const cache = new Docucache({autoRemoveOrphans: true});
     const john = {
       __typename: 'User',
       _id: '1',
       name: 'John',
+      friends: [],
     };
     const jane = {
       __typename: 'User',
@@ -210,20 +211,22 @@ describe('Modification', () => {
       friends: [john, jane],
       test: ['hello', 1, {name: 'Jill'}]
     };
-    cache.extractAndAdd(jack);
-    expect(cache.get('User:3')).toEqual(jack);
+    await cache.extractAndAdd(jack);
+    expect(cache.resolve('User:3')).resolves.toEqual(jack);
     // remove john and jane from the cache
-    cache.remove(john);
+    await cache.remove(john);
     // get jack again from the cache. Since john and jane are no longer in the cache, they should be removed from jack's friends list.
     // and since jane is no longer refrenced by any other document, she is removed from the cache
     // console.log(cache.get('User:3'));
-    expect(cache.get<typeof jack>('User:3').friends).toEqual([
-      {
-        __typename: 'User',
-        _id: '2',
-        name: 'Jane',
-        friends: [], // john was removed from jane's friends list
-      }
-    ]);
+    expect(cache.resolve<typeof jack>('User:3')).resolves.toMatchObject({
+      friends: [
+        {
+          __typename: 'User',
+          _id: '2',
+          name: 'Jane',
+          friends: [], // john was removed from jane's friends list
+        }
+      ],
+    });
   });
 });

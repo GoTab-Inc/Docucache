@@ -8,22 +8,23 @@ This library is the core for `@docucache/doculord` and `@docucache/documerge`.
 
 ## What is a document?
 
-A document is any js object in which a `type` can be extracted. 
+A document is any js object in which a `cacheId` can be extracted. 
+The `cacheId` uniquely identifies a document in the cache and is usually constructed by concatenating a `type` with an `id`, but can be configured to be extracted in other ways as long as the id is universally unique.
+
 Out of the box docucache supports getting the type from the following fields of an object:
 
 - `__typename`/`_type`
 - `_id` when it's formatted like `[type]:[id]`. eg `User:123`
 
-Both of these can be configured by setting `idFields` and `typeFields` when constructing a DocuCache instance.
+This can be configured by setting `idFields` and `typeFields` when constructing a DocuCache instance.
 
-Additionally a document will have a cacheId generated which is the id that uniquely identifies a document in the cache.
 By default the cacheId will look like `[type]:[id]`, but this can be overriden on a per-type basis using CachePolicies.
 
 Examples of documents include:
 ```js
 [
   {
-    _type: 'User', // or __typename in order to support Graphql
+    _type: 'User', // can also be __typename in order to support Graphql responses
     _id: '123',
     user_name: 'John',
     age: 123
@@ -82,18 +83,18 @@ We can add the response to the cache like so
 
 ```js
 const cache = new DocuCache();
-cache.extractAndAdd(availablePets);
+await cache.extractAndAdd(availablePets);
 ```
 
 This will search deeply for documents in the`availablePets` object, denormalize them, and add them to the cache.
 
 Note that in this response there are 3 documents. A dog, the category the dog belongs to, and a tag for dog.
 
-If you happen to know how to reconstruct the cacheId then you can fetch documents individually.
+If you happen to know how to reconstruct the `cacheId`` then you can fetch documents individually.
 
 ```js
-cache.get('Category:0'); // {_type: "Category", _id: 0, name: "dogs"}
-cache.get('Tag:0'); // {_type: "Tag", _id: 0, name: "cutie"}
+await cache.resolve('Category:0'); // {_type: "Category", _id: 0, name: "dogs"}
+await cache.resolve('Tag:0'); // {_type: "Tag", _id: 0, name: "cutie"}
 ```
 
 Now lets say later you make a request to `GET /pet/0` and it returns this data:
@@ -125,8 +126,8 @@ Note that the category name has changed from `dogs` to `doggies`.
 If we `extractAndAdd` again then as you would imagine, the category document is updated.
 
 ```js
-cache.extractAndAdd(dog);
-cache.get('Category:0'); // {_type: "Category", _id: 0, name: "doggies"}
+await cache.extractAndAdd(dog);
+await cache.resolve('Category:0'); // {_type: "Category", _id: 0, name: "doggies"}
 ```
 
 In some cases you may want to cache the result of an entire request instead of _just_ the nested documents.
@@ -134,10 +135,16 @@ This can be useful, for example, to intercept requests and return a cached respo
 
 ```js
 const tags = {data: [{_type: "Tag", _id: 0, name: "cutie"}, {_type: "Tag", _id: 1, name: "ugly"}], errors: null, warnings: null};
-cache.addAsDocument(obj, 'list-tags');
-cache.extractAndAdd({_type: "Tag", _id: 1, name: "hard to love"});
-cache.get('list-tags'); // {data: [{_type: "Tag", _id: 0, name: "cutie"}, {_type: "Tag", _id: 1, name: "hard to love"}], errors: null, warnings: null};
+// Cache an arbitrary repsone as its own id
+await cache.addAsDocument(obj, 'list-tags');
+// Update one of the tags returned
+await cache.extractAndAdd({_type: "Tag", _id: 1, name: "hard to love"});
+await cache.resolve('list-tags'); // {data: [{_type: "Tag", _id: 0, name: "cutie"}, {_type: "Tag", _id: 1, name: "hard to love"}], errors: null, warnings: null};
 ```
+
+## Policies
+
+Policies are type-level configurations for Documents in the cache. These policies include extractors, size limitation/purge configurations, as well as resolvers for when data is missing from the store.
 
 ## Removing documents
 
@@ -164,9 +171,16 @@ Imagine a user has a _large_ list of friends.
 To conserve space in the cache you may choose to only store up to 100 User objects. 
 Once the cache reaches 101 friends, you might choose to purge older entries from the cache.
 
+When a document doesn't exist in the cache, you will get an instance of `MissingData` in its place when hydrating a resource.
+
+If you would like to throw an error instead, set `throwOnMissing` in the options when resolving the resource.
+Alternatively you may provide an `onMissingResource` callback that will be called with the type and id of the missing resource. This allows you to resolve the resource with a network request. Resolving the resource adds it to the cache and may invoke purging policies as well.
+
+Both of these options can also be specified in the cache policies.
+
 ## Considerations
 
 When adding documents to the cache it's preferable to always pass in the full shape of the document. 
 Fields that are intended to be empty should explicitly be set to `null` or return an empty object, string, or array.
 
-Additionally, changing the shape of documents between requests may result in undefined behavior.
+Additionally, changing the shape of documents between requests may result in `undefined` behavior if your application isn't set up to handle different shapes for documents.

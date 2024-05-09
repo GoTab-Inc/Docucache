@@ -4,7 +4,7 @@ Doculord is a small library for creating type-safe client-side document-based lo
 
 Doculord extends the declarative nature of client-side frameworks to resource management. 
 
-Doculor is especially crafted for handling optimistic updating patterns in a framework agnostic manner.
+Doculord is especially crafted for handling optimistic updating patterns in a framework agnostic manner.
 
 ## Usage
 
@@ -22,7 +22,7 @@ const Post = Document<{name: string, likes: 0, isLikedByMe: boolean}>();
 Post.action('incrementLike') // A name for the action plus additional context such as a controller
   .when({isLikedByMe: {equalTo: true}}) // the trigger condition
   .preApply((post) => {
-    return {...post: like: post.likes + 1};
+    return {...post, likes: post.likes + 1};
   }) // perform additional optimistic updates when triggered (it's ideal not to trigger other actions)
   .apply(async ({name}) => {
     const response = await fetch(`api/posts/${name}/add-like`);
@@ -50,7 +50,7 @@ Use the `checkConflicts` method when initiating an action. If this function thro
 The object returned from a call to `Document` is a function that accepts an object and returns a document store.
 
 ```js
-const post = Document({name: 'Why documents are awesome'});
+const post = Post({name: 'Why documents are awesome'});
 ```
 
 Subscribe to changes in the store by calling `store.subscribe`.
@@ -68,7 +68,7 @@ await post; // waits until the most recent update is finished. Returns a snapsho
 
 ### Mobx/Redux compatability
 
-By default doculord uses reactively as the reactive system, however this can be configured with an observability adapter.
+By default doculord uses a polyfill for [Ecmascript Observables](https://github.com/tc39/proposal-observable) as the reactive system, however this can be configured with an observability adapter.
 
 This adapter is really just an object with a method for making/de-making an observable object and a method for subscribing.
 
@@ -77,11 +77,11 @@ import {toJS, observe} from 'mobx';
 
 const Post = new Document({
   adapter: {
-    // Should return an imuttable object
+    // Should return an immutable object
     makeSnapshot(obj) {
       return toJS(obj);
     },
-    // Should return a mutable object. Not every adapter will use this method
+    // Should return a mutable object _or_ an object with a setter. Not every adapter will use this method
     getObservable(obj) {
       return makeAutoObservable(obj)
     },
@@ -135,7 +135,6 @@ class MyPostsController {
   likePost(post) {
     await fetch(...);
   }
-
 }
 
 ```
