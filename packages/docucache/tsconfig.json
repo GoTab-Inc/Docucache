@@ -6,7 +6,6 @@
     "emitDeclarationOnly": true,
     "declarationMap": true,
     "outFile": "./dist/main.ts",
-    "tsBuildInfoFile": ".tsbuildinfo",
     "lib": ["ESNext"],
     "module": "ESNext",
     "target": "ESNext",
