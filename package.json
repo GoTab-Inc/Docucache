@@ -12,6 +12,10 @@
     "bun": ">=0.5.8"
   },
   "devDependencies": {
-    "@types/bun": "^1.1.1"
+    "@types/bun": "^1.1.1",
+    "husky": "^9.0.11"
+  },
+  "scripts": {
+    "prepare": "husky"
   }
 }

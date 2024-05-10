@@ -5,14 +5,15 @@
   "exports": {
     ".": {
       "require": "./dist/index.js",
-      "import": "./src/index.ts"
+      "import": "./src/index.ts",
+      "types": "./dist/d.ts"
     }
   },
-  "types": "./dist/types.d.ts",
+  "types": "./dist/d.ts",
   "type": "module",
   "scripts": {
     "test": "bun test",
-    "build": "bun build ./src/index.ts ./src/stores/*.ts --outdir ./dist --format esm --external '*' && bun run types",
+    "build": "rm -rf dist && bun build ./src/index.ts ./src/stores/*.ts --outdir ./dist --format esm --external '*' && bun run types",
     "types": "bunx tsc -p ./tsconfig.json"
   },
   "devDependencies": {
