@@ -3,15 +3,15 @@
   "exclude": ["node_modules", "dist"],
   "compilerOptions": {
     "types": [],
+    "declaration": true,
     "emitDeclarationOnly": true,
     "declarationMap": true,
     "outFile": "./dist/main.ts",
-    "tsBuildInfoFile": ".tsbuildinfo",
     "lib": ["ESNext"],
     "module": "ESNext",
     "target": "ESNext",
     "moduleResolution": "node",
     "allowJs": true,
-    "composite": true
+    "incremental": false
   },
 }

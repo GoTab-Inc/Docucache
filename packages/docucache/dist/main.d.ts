@@ -1,5 +1,5 @@
-declare module "src/stores/idb" {
-    import type { Store } from "src/stores/index";
+declare module "stores/idb" {
+    import type { Store } from "stores/index";
     export class IDBStore implements Store {
         subscribe(id: string, callback: (document: any) => void): () => void;
         export(): Promise<{
@@ -14,9 +14,9 @@ declare module "src/stores/idb" {
         clear(): Promise<void>;
     }
 }
-declare module "src/stores/mem" {
-    import type { Document } from "src/index";
-    import type { Store } from "src/stores/index";
+declare module "stores/mem" {
+    import type { Document } from "index";
+    import type { Store } from "stores/index";
     export class MemoryStore implements Store {
         private store;
         private emitter;
@@ -35,7 +35,7 @@ declare module "src/stores/mem" {
         }[]>;
     }
 }
-declare module "src/stores/index" {
+declare module "stores/index" {
     export interface Store {
         get(key: string): Promise<any>;
         set(key: string, value: any): Promise<void>;
@@ -49,10 +49,10 @@ declare module "src/stores/index" {
         }[]>;
         subscribe(id: string, callback: (document: any) => void): () => void;
     }
-    export * from "src/stores/idb";
-    export * from "src/stores/mem";
+    export * from "stores/idb";
+    export * from "stores/mem";
 }
-declare module "src/index" {
+declare module "index" {
     export type Document<T extends object = {}> = T;
     export type CachePolicy = {
         getCacheId?: (document: Document, type: string, idFields: string[]) => string;
