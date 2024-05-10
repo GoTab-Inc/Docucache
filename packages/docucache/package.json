@@ -6,14 +6,14 @@
     ".": {
       "require": "./dist/index.js",
       "import": "./src/index.ts",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/main.d.ts"
     }
   },
-  "types": "./dist/index.d.ts",
+  "types": "./dist/main.d.ts",
   "type": "module",
   "scripts": {
     "test": "bun test",
-    "build": "rm -rf dist && bun build ./src/index.ts ./src/stores/*.ts --outdir ./dist --format esm --external '*' && bun run types",
+    "build": "bun build ./src/index.ts ./src/stores/*.ts --outdir ./dist --format esm --external '*' && bun run types",
     "types": "bunx tsc -p ./tsconfig.json"
   },
   "devDependencies": {
