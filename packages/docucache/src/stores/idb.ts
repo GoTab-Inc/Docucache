@@ -2,6 +2,9 @@
 import type {Store} from './';
 
 export class IDBStore implements Store {
+  subscribe(id: string, callback: (document: any) => void): () => void {
+    throw new Error('Method not implemented.');
+  }
   export(): Promise<{ id: string; document: any; }[]> {
     throw new Error('Method not implemented.');
   }

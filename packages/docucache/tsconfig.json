@@ -1,10 +1,17 @@
 {
+  "include": ["src/index.ts", "src/stores/*.ts"],
+  "exclude": ["node_modules", "dist"],
   "compilerOptions": {
-    "types": ["@types/bun"],
+    "types": [],
+    "emitDeclarationOnly": true,
+    "declarationMap": true,
+    "outFile": "./dist/types.d.ts",
+    "tsBuildInfoFile": ".tsbuildinfo",
     "lib": ["ESNext"],
     "module": "ESNext",
     "target": "ESNext",
     "moduleResolution": "node",
-    "allowJs": true
-  }
+    "allowJs": true,
+    "composite": true
+  },
 }

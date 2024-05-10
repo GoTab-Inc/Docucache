@@ -6,6 +6,7 @@ export interface Store {
   size(): Promise<number>;
   clear(): Promise<void>;
   export(): Promise<{id: string, document: any}[]>;
+  subscribe(id: string, callback: (document: any) => void): () => void;
 }
 
 export * from './idb';
