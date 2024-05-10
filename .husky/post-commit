@@ -1,0 +1,1 @@
+bun run --filter="@docucache/docucache" build  && git commit -am "chore: post-commit build" --no-verify

@@ -6,10 +6,10 @@
     ".": {
       "require": "./dist/index.js",
       "import": "./src/index.ts",
-      "types": "./dist/.d.ts"
+      "types": "./dist/index.d.ts"
     }
   },
-  "types": "./dist/.d.ts",
+  "types": "./dist/index.d.ts",
   "type": "module",
   "scripts": {
     "test": "bun test",
