@@ -5,7 +5,7 @@
     "types": [],
     "emitDeclarationOnly": true,
     "declarationMap": true,
-    "outFile": "./dist/d.ts",
+    "outFile": "./dist/.ts",
     "tsBuildInfoFile": ".tsbuildinfo",
     "lib": ["ESNext"],
     "module": "ESNext",
