@@ -1,5 +1,5 @@
 {
-  "name": "doculord",
+  "name": "docusystem",
   "private": true,
   "workspaces": [
     "packages/*"

@@ -18,7 +18,7 @@ Out of the box docucache supports getting the type from the following fields of 
 
 This can be configured by setting `idFields` and `typeFields` when constructing a DocuCache instance.
 
-By default the cacheId will look like `[type]:[id]`, but this can be overriden on a per-type basis using CachePolicies.
+By default the `cacheId` will look like `[type]:[id]`, but this can be overriden on a per-type basis using CachePolicies.
 
 Examples of documents include:
 ```js
@@ -86,11 +86,11 @@ const cache = new DocuCache();
 await cache.extractAndAdd(availablePets);
 ```
 
-This will search deeply for documents in the`availablePets` object, denormalize them, and add them to the cache.
+This will search deeply for documents in the `availablePets` object, normalize them, and add them to the cache.
 
 Note that in this response there are 3 documents. A dog, the category the dog belongs to, and a tag for dog.
 
-If you happen to know how to reconstruct the `cacheId`` then you can fetch documents individually.
+If you happen to know how to reconstruct the `cacheId` then you can fetch documents individually.
 
 ```js
 await cache.resolve('Category:0'); // {_type: "Category", _id: 0, name: "dogs"}
@@ -148,9 +148,9 @@ Policies are type-level configurations for Documents in the cache. These policie
 
 ## Removing documents
 
-Removing a document from the cache doesn't necessarily remove it from all the other documents that reference it.
+Removing a document usually just means removing the reference to it in any data that references it. When a document is no longer referenced by any other documents it will be garbage collected. This process occurs in the background automatically, but can also be triggered by calling the `clean` function directly.
 
-In some cases this is desirable behavior.
+Documents can also be removed from the cache directly, however, removing documents from the cache doesn't automatically remove them from all the other documents that may reference it.
 
 Imagine a user has a _large_ list of friends.
 
@@ -177,6 +177,30 @@ If you would like to throw an error instead, set `throwOnMissing` in the options
 Alternatively you may provide an `onMissingResource` callback that will be called with the type and id of the missing resource. This allows you to resolve the resource with a network request. Resolving the resource adds it to the cache and may invoke purging policies as well.
 
 Both of these options can also be specified in the cache policies.
+
+## Observing Documents
+
+Observing a document means adding a subscriber function to a document reference that will be notified when a document is created, destroyed, or updated.
+
+An observability adapter only needs to implement two interfaces.
+
+> [!NOTE] (WIP: Subject to change)
+
+```ts
+
+const BaseAdapter: ObservableAdapter = {
+  getSnapshot<T>(doc: any): Promise<any> {
+    // ...
+  },
+  getMutable<T>(doc: any): Promise<any> {
+    // ...
+  },
+  subscribe<T>(doc: any, fn: (doc: any) => void): () => void {
+    // ...
+  }
+}
+
+```
 
 ## Considerations
 

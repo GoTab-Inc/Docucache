@@ -15,9 +15,7 @@ Docusystem borrows ideas from great works such as apollo/client, pouchdb, trpc, 
 
 ## Tools
 
-- Doculord - Create atomic re-actions to document changes, efficiently handling optimistic updates, retries, and rollbacks.
-
-- Docucache - Cache and modify documents that come back from any source. This can be configured to serve as a source of truth and mutations for Doculord, automatically updating your documents when values in the cache are changed, or it can be used standalone in projects as a store.
+- Docucache - Cache and modify documents that come back from any source. This can be configured to serve as a source of truth or a source of subscriptions for other libraries.
 
 - Documerge (WIP) - This is Docucache combined with Automerge 2. A powerful combination useful for creating realtime collaboration in a peer-to-peer fashion as opposed to centralized, allowing for offline collaboration between multiple devices. Uses Conflict-Free Replicated Data Types (CRDT) to ensure that the state of two caches are _eventually_ synchronized.
 
@@ -27,7 +25,7 @@ Docusystem borrows ideas from great works such as apollo/client, pouchdb, trpc, 
 
 ## Development
 
-Doculord is developed as a typescript library using Bun for workspace package management and 
+Docusystem is developed using typescript and Bun for workspace package management 
 
 First [install bun](https://bun.sh/docs/installation).
 
