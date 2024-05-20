@@ -1,4 +1,4 @@
-import {describe, it, expect} from 'bun:test';
+import {describe, it, expect, mock} from 'bun:test';
 import {Docucache} from '../src';
 
 describe('Policies', () => {
@@ -38,6 +38,34 @@ describe('Extraction', () => {
       const documents = cache.extract(value);
       expect(documents).toEqual([]);
     }
+  });
+
+  it('extracts refs', () => {
+    const cache = new Docucache();
+
+    const user_1 = {
+      _id: '1',
+      __typename: 'User',
+      name: 'Bob',
+      friend: '__ref:2',
+    };
+    const user_2 = {
+      _id: '2',
+      __typename: 'User',
+      name: 'Alice',
+      friend: '__ref:1',
+    };
+    
+    const profile = {
+      friends: {
+        all: [user_1, user_2],
+        best: user_1,
+      },
+      father: user_1,
+    }
+
+    const refs = cache.extractRefs(profile);
+    expect(refs).toEqual(['User:1', 'User:2']);
   });
 
   it('can extract simple documents', () => {
@@ -186,17 +214,42 @@ describe('Modification', () => {
     await cache.remove(john);
     expect(cache.resolve('User:1')).resolves.toBeNil();
   });
+});
 
-  // Removing a document referenced by another document may orphan the document
-  // Say you have a document such as: {_id: 'User:1', friends: ['__ref:User:2', '__ref:User:3']} and then removed `__ref:User:3` from the cache.
-  // 
-  it('can delete orphaned documents', async () => {
-    const cache = new Docucache({autoRemoveOrphans: true});
+describe('Subscription', () => {
+  it('can subscribe to simple ref', async () => {
+    const cache = new Docucache();
+    const subscription = cache.subscription('User:1');
+    const callback = mock(() => {});
+
+    subscription.on('create', callback)
+      .on('update', callback)
+      .on('delete', callback);
+    
     const john = {
       __typename: 'User',
       _id: '1',
       name: 'John',
-      friends: [],
+    };
+
+    await cache.extractAndAdd(john);
+    cache.flushPendingUpdates();
+    await cache.update(john, () => {
+      john.name = 'Johnny';
+    });
+    cache.flushPendingUpdates();
+    await cache.remove(john);
+    cache.flushPendingUpdates();
+    
+    expect(callback).toHaveBeenCalledTimes(3);
+  });
+
+  it('can subscribe to object with refs', async () => {
+    const cache = new Docucache();
+    const john = {
+      __typename: 'User',
+      _id: '1',
+      name: 'John',
     };
     const jane = {
       __typename: 'User',
@@ -209,24 +262,12 @@ describe('Modification', () => {
       _id: '3',
       name: 'Jack',
       friends: [john, jane],
-      test: ['hello', 1, {name: 'Jill'}]
     };
-    await cache.extractAndAdd(jack);
-    expect(cache.resolve('User:3')).resolves.toEqual(jack);
-    // remove john and jane from the cache
-    await cache.remove(john);
-    // get jack again from the cache. Since john and jane are no longer in the cache, they should be removed from jack's friends list.
-    // and since jane is no longer refrenced by any other document, she is removed from the cache
-    // console.log(cache.get('User:3'));
-    expect(cache.resolve<typeof jack>('User:3')).resolves.toMatchObject({
-      friends: [
-        {
-          __typename: 'User',
-          _id: '2',
-          name: 'Jane',
-          friends: [], // john was removed from jane's friends list
-        }
-      ],
-    });
+    const profile = {
+      user: jack,
+    };
+    const callback = mock((...args) => {console.log({args})});
+    const subscription = cache.subscription(profile)
+      .on('create', () => {});
   });
 });

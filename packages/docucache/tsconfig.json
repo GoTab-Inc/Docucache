@@ -7,7 +7,7 @@
     "emitDeclarationOnly": true,
     "declarationMap": true,
     "outFile": "./dist/main.ts",
-    "lib": ["ESNext"],
+    "lib": ["ESNext", "DOM"],
     "module": "ESNext",
     "target": "ESNext",
     "moduleResolution": "node",

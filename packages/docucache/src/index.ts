@@ -1,16 +1,55 @@
+import EventEmitter from 'eventemitter3';
 import type { Store } from './stores';
 import { MemoryStore } from './stores/mem';
 
 export type Document<T extends object = {}> = T;
 
 export type CachePolicy = {
-  getCacheId?: (document: Document, type: string, idFields: string[]) => string;
+  /**
+   * A function used to determine the cache id of a document.
+   * The default is to use getType and getId to construct a string in the format "type:id".
+   * If a null is returned, the document will not match this policy
+   */
+  getCacheId?: (document: Document, type: string, idFields: string[]) => string | null;
+  /**
+   * A function used to extract the type from a document. The default is to search for a type field in the document.
+   */
+  getType?: (document: Document, typeFields: string[]) => string;
+  /**
+   * A function used to determine the id of a document. The default is to search for an id field in the document.
+   */
+  getId?: (document: Document, idFields: string[]) => string;
+  /**
+   * The fields to use to determine the id of the document. The fields will be checked in order for a string value and the first one found will be used as the document's id.
+   */
   idFields?: string[];
+  /**
+   * The fields used to determine the type of the document. The fields will be checked in order for a string value and the first one found will be used as the document's type.
+   */
+  typeFields?: string[];
+  /**
+   * If true, an error will be thrown if the document is not found in the cache.
+   * If false, the document will be returned as Missing. Default is `false` when getDocuments is not set. Otherwise `true`.
+   */
+  throwOnMissing?: boolean;
+  /**
+   * When one or more documents are missing, this function will be called to fetch them
+   * The global getDocuments function will be called before any policy-specific getDocuments function.
+   * The documents that the global getDocuments function can't find will be passed to the policy-specific getDocuments function.
+   * If this is set, throwOnMissing will default to true.
+   */
+  onMissingDocuments?: (ids: string[]) => Promise<Document[]>;
+
+  /**
+   * When a document is updated this function is called and if it returns `true` the document will be removed from the cache.
+   * This can be useful to remove documents with an `archive` field set to `true` for example.
+   */
+  shouldDelete?: (document: Document) => boolean;
 };
 
 type CachePolicies = Record<string, CachePolicy>;
 
-type DocucacheInitOptions = {
+export type DocucacheInitOptions = {
   getDocumentType?: (document: Document) => string;
   idFields?: string[];
   typeFields?: string[];
@@ -31,6 +70,7 @@ type StoreResolveOpts = {
 }
 
 const NotCachedSymbol = Symbol('NotCached');
+export const Missing = Symbol('MissingDocument');
 
 function defaultCacheIdGetter(document: Record<string, string>, type: string, idFields: string[]): string {
   const id = idFields.map(field => document[field] ?? '').join('+');
@@ -46,6 +86,7 @@ function defaultCacheIdGetter(document: Record<string, string>, type: string, id
   return [type, id].join(':');
 }
 
+// TODO: this should take in the policies and use the policy's getType function?
 function defaultCacheTypeGetter(document: Record<string, string>, typeFields: string[], idFields: string[]): string {
   const id = idFields.map(field => document[field] ?? '').join('+');
   return typeFields.map(field => document[field]).find(Boolean) ?? id?.match(/^([^:]+):/)?.[1];
@@ -59,9 +100,66 @@ function toType(obj: any) {
   return Object.prototype.toString.call(obj).slice(8, -1);
 }
 
+// This is a topical event emitter that is used to optimize how updates are emitted
+class DocEventEmitter extends EventEmitter {
+  /**
+   * Returns an object that implements an EventEmitter for the given "topics"
+   * Calling any of the methods on the returned object will assume the event only applies to the given topics
+   * When emitTo is called from the main emitter, all listeners that have an event subscribed to at least one topic will be called
+   */
+  bindTo<T = any>(topics: string[], ctx): EventEmitter<'create' | 'update' | 'delete', T> {
+    const fns = ['on', 'once', 'off', 'emit', 'listeners', 'listenerCount', 'removeListener', 'removeAllListeners', 'addListener'];
+    const prefix = topics.join('--@--');
+    const self = this;
+    return fns.reduce((acc, fn) => {
+      acc[fn] = function (e: string, ...args: any[]) {
+        let result = self[fn](prefix + '--:--' + e, ...args);
+        return result === self ? acc : result;
+      }
+      return acc;
+    }, {}) as any;
+  }
+
+  /**
+   * Emits an event to all listeners that have subscribed to at least one of the topics in the given list
+   */
+  emitTo(topics: string[], event: string, ...args: any[]) {
+    const performed = new Set<string>();
+    this.eventNames()
+      .map((event: string) => [event, ...event.split('--:--')])
+      // Filter out event names that don't include the event type
+      .filter(([,, topicEvent]) => event === topicEvent)
+      // Filter out event names that don't include any of the topics
+      .filter(([, topicKey]) => {
+        const subscribedTopics = topicKey.split('--@--');
+        return subscribedTopics.some(topic => topics.includes(topic));
+      })
+      .forEach(([eventName]) => {
+        if(performed.has(eventName)) {
+          return;
+        }
+        performed.add(eventName);
+        this.emit(eventName, ...args);
+      });
+  }
+}
+
 export class Docucache {
 
   private store: Store = new MemoryStore();
+
+  private pendingUpdateTimeout: number;
+
+  private pendingUpdates = {
+    create: new Set<string>(),
+    update: new Set<string>(),
+    delete: new Set<string>(),
+  };
+
+  /**
+   * A singleton emitter for all the cache events
+   */
+  private emitter = new DocEventEmitter();
 
   private policies: CachePolicies = {};
 
@@ -88,6 +186,37 @@ export class Docucache {
     this.idFields = idFields;
     this.typeFields = typeFields;
     this.autoRemoveOprhans = autoRemoveOrphans;
+  }
+
+  private notifyChanges(event: 'create' | 'update' | 'delete', ref: string) {
+    this.pendingUpdates[event].add(ref);
+    if(this.pendingUpdateTimeout) {
+      return;
+    }
+    // Flush the updates on the next tick. This is so that we can batch updates
+    this.pendingUpdateTimeout = setTimeout(() => {
+      this.flushPendingUpdates();
+    }, 0);
+  }
+
+  flushPendingUpdates() {
+    clearTimeout(this.pendingUpdateTimeout);
+    this.pendingUpdateTimeout = null;
+    const order = ['create', 'update', 'delete'];
+    for(const event of order) {
+      const refs = this.pendingUpdates[event as keyof typeof this.pendingUpdates];
+      for(const ref of refs) {
+        this.emitter.emitTo([ref], event, ref);
+      }
+      refs.clear();
+    }
+    this.emitter.emit('flushed');
+  }
+
+  flushed() {
+    return new Promise<void>((resolve) => {
+      this.emitter.once('flushed', resolve);
+    });
   }
 
   /**
@@ -151,7 +280,7 @@ export class Docucache {
 
   private isDocumentOrRef(doc: Document | string) {
     if(typeof doc === 'string') {
-      const regex = /^(__ref:)?([^:]+):/;
+      const regex = /^(__ref:)?[^:]+:/;
       return regex.test(doc);
     }
     return !!this.getDocumentType(doc, this.typeFields, this.idFields);
@@ -220,23 +349,13 @@ export class Docucache {
    */
   async add<T extends object>(document: Document<T>) {
     const id = this.getCacheId(document);
-    const type = this.getDocumentType(document, this.typeFields, this.idFields);
     const normalized = this.normalize(document);
     const current = await this.store.get(id);
     // Note: this is where cache object merging happens. It might be better to complicate this logic
-    // so that it can be custom. For example, replace instead of mergeing. We can also add events for when the document is first added to the store
-    // by simply detecting if a current value exists already
+    // so that it can be custom. For example, replace instead of merging
     const newValue = Object.assign(current ?? {}, normalized);
     await this.store.set(id, newValue);
-    // TODO: this should be a function or class with configurable behavior
-    const stats = this.stats.get(type) ?? {
-      size: 0,
-      refs: new Set<string>(),
-      shape: this.getShape(normalized),
-    }
-    stats.size += 1;
-    stats.refs.add(id);
-    this.stats.set(type, stats);
+    this.notifyChanges(current ? 'update' : 'create', id);
   }
 
   /**
@@ -263,6 +382,19 @@ export class Docucache {
       return subDocuments;
     }
     return [];
+  }
+
+  extractRefs(obj: any): string[] {
+    if(!obj) {
+      return [];
+    }
+    if(typeof obj === 'string' && obj.startsWith('__ref:')) {
+      return [obj];
+    }
+    // TODO: this doesn't exactly return a ref, it returns a cacheId. Should it be a ref?
+    return [...new Set<any>(this.extract(obj)
+      .map(this.getCacheId.bind(this)))]
+      .sort((a: string, b: string) => a.localeCompare(b));
   }
 
   /**
@@ -302,9 +434,10 @@ export class Docucache {
   /**
    * Remove a document from the cache.
    */
-  remove(obj: Document | string) {
+  async remove(obj: Document | string) {
     const id = this.resolveId(obj);
-    return this.store.delete(id);
+    await this.store.delete(id);
+    this.notifyChanges('delete', id);
   }
 
   /**
@@ -342,37 +475,22 @@ export class Docucache {
   }
 
   /**
-   * Returns a denormalized version of an object, potentially resolving references.
+   * Returns a denormalized version of any object, resolving all references.
    */
-  private async denormalize<T extends any>(obj: object): Promise<T> {
-    if(typeof obj !== 'object' || !obj) {
-      return obj as T;
+  async denormalize<T extends any>(obj: any): Promise<T> {
+    // Iterate through the object and whenever a reference is encountered, replace it with a document
+    if(typeof obj === 'string' && obj.startsWith('__ref:')) {
+      return this.resolveRef(obj) as T;
     }
-    // TODO: I'm not really a fan of async reduce pattern used here. 
-    // This should be done iteratively instead of recursively and could be made far more efficient. 
-    const result = await Object.entries(obj).reduce(async (aacc, [key, value]) => {
-      const acc = await aacc;
-      if(typeof value === 'string' && value.startsWith('__ref:')) {
-        const id = value.slice('__ref:'.length);
-        acc[key] = await this.resolve(id) ?? NotCachedSymbol;
-      } else {
-        acc[key] = await this.denormalize(value);
+    if(typeof obj === 'object') {
+      let result = Array.isArray(obj) ? [] : {};
+      for(const key in obj) {
+        // Mega slight optimization would be to skip non-string primitives here
+        result[key] = await this.denormalize(obj[key]);
       }
-      return acc;
-    }, Array.isArray(obj) ? Promise.resolve([]) : Promise.resolve({}));
-    // For arrays we want to filter out any NotCachedSymbol values
-    if(Array.isArray(result)) {
-      return result.filter(item => item !== NotCachedSymbol) as T;
+      return result as T;
     }
-    // For objects we will nullify any NotCachedSymbol values
-    if(typeof result === 'object') {
-      for(const key in result) {
-        if(result[key] === NotCachedSymbol) {
-          result[key] = null;
-        }
-      }
-    }
-    return result as T;
+    return obj as T;
   }
 
   /**
@@ -420,5 +538,13 @@ export class Docucache {
       this.extractAndAddOptimistic(optimisticResult);
     }
     return result;
+  }
+
+  subscription<T = any>(doc: any) {
+    const refs = typeof doc === 'string' ? [doc] : this.extractRefs(doc);
+    if(!refs?.length) {
+      throw new Error('Cannot subscribe to an object with no refs');
+    }
+    return this.emitter.bindTo<T>(refs, doc);
   }
 }

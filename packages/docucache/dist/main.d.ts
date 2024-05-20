@@ -53,13 +53,51 @@ declare module "stores/index" {
     export * from "stores/mem";
 }
 declare module "index" {
+    import EventEmitter from 'eventemitter3';
     export type Document<T extends object = {}> = T;
     export type CachePolicy = {
-        getCacheId?: (document: Document, type: string, idFields: string[]) => string;
+        /**
+         * A function used to determine the cache id of a document.
+         * The default is to use getType and getId to construct a string in the format "type:id".
+         * If a null is returned, the document will not match this policy
+         */
+        getCacheId?: (document: Document, type: string, idFields: string[]) => string | null;
+        /**
+         * A function used to extract the type from a document. The default is to search for a type field in the document.
+         */
+        getType?: (document: Document, typeFields: string[]) => string;
+        /**
+         * A function used to determine the id of a document. The default is to search for an id field in the document.
+         */
+        getId?: (document: Document, idFields: string[]) => string;
+        /**
+         * The fields to use to determine the id of the document. The fields will be checked in order for a string value and the first one found will be used as the document's id.
+         */
         idFields?: string[];
+        /**
+         * The fields used to determine the type of the document. The fields will be checked in order for a string value and the first one found will be used as the document's type.
+         */
+        typeFields?: string[];
+        /**
+         * If true, an error will be thrown if the document is not found in the cache.
+         * If false, the document will be returned as Missing. Default is `false` when getDocuments is not set. Otherwise `true`.
+         */
+        throwOnMissing?: boolean;
+        /**
+         * When one or more documents are missing, this function will be called to fetch them
+         * The global getDocuments function will be called before any policy-specific getDocuments function.
+         * The documents that the global getDocuments function can't find will be passed to the policy-specific getDocuments function.
+         * If this is set, throwOnMissing will default to true.
+         */
+        onMissingDocuments?: (ids: string[]) => Promise<Document[]>;
+        /**
+         * When a document is updated this function is called and if it returns `true` the document will be removed from the cache.
+         * This can be useful to remove documents with an `archive` field set to `true` for example.
+         */
+        shouldDelete?: (document: Document) => boolean;
     };
     type CachePolicies = Record<string, CachePolicy>;
-    type DocucacheInitOptions = {
+    export type DocucacheInitOptions = {
         getDocumentType?: (document: Document) => string;
         idFields?: string[];
         typeFields?: string[];
@@ -74,8 +112,15 @@ declare module "index" {
         throwIfMissing?: boolean;
         onMissingValue?: (id: string) => Promise<any>;
     };
+    export const Missing: unique symbol;
     export class Docucache {
         private store;
+        private pendingUpdateTimeout;
+        private pendingUpdates;
+        /**
+         * A singleton emitter for all the cache events
+         */
+        private emitter;
         private policies;
         private getDocumentType;
         private stats;
@@ -83,6 +128,9 @@ declare module "index" {
         private typeFields;
         private autoRemoveOprhans;
         constructor({ getDocumentType, policies, typeFields, idFields, autoRemoveOrphans, }?: DocucacheInitOptions);
+        private notifyChanges;
+        flushPendingUpdates(): void;
+        flushed(): Promise<void>;
         /**
          * The size of the cache
          */
@@ -127,6 +175,7 @@ declare module "index" {
          * Extract the documents from any object, no matter how deeply nested
          */
         extract(obj: any): any;
+        extractRefs(obj: any): string[];
         /**
          * Extracts the documents from the given object, no matter how deeply nested, and adds them to the cache.
          */
@@ -160,9 +209,9 @@ declare module "index" {
          */
         normalize(obj: object): {};
         /**
-         * Returns a denormalized version of an object, potentially resolving references.
+         * Returns a denormalized version of any object, resolving all references.
          */
-        private denormalize;
+        denormalize<T extends any>(obj: any): Promise<T>;
         /**
          * Returns a JSON-serializable representation of the cache.
          */
@@ -180,6 +229,7 @@ declare module "index" {
          * Other settings can be passed to control the behavior of the cache such as optimstic updates.
          */
         wrap<T>(fn: () => Promise<T>, options?: DocucacheWrapOptions): Promise<T>;
+        subscription<T = any>(doc: any): EventEmitter<"update" | "create" | "delete", T>;
     }
 }
 //# sourceMappingURL=main.d.ts.map

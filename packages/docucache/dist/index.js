@@ -1,4 +1,5 @@
 // src/index.ts
+import EventEmitter from "eventemitter3";
 import {MemoryStore} from "./stores/mem";
 var defaultCacheIdGetter = function(document, type, idFields) {
   const id = idFields.map((field) => document[field] ?? "").join("+");
@@ -15,9 +16,48 @@ var defaultCacheTypeGetter = function(document, typeFields, idFields) {
   return typeFields.map((field) => document[field]).find(Boolean) ?? id?.match(/^([^:]+):/)?.[1];
 };
 var NotCachedSymbol = Symbol("NotCached");
+var Missing = Symbol("MissingDocument");
+
+class DocEventEmitter extends EventEmitter {
+  constructor() {
+    super(...arguments);
+  }
+  bindTo(topics, ctx) {
+    const fns = ["on", "once", "off", "emit", "listeners", "listenerCount", "removeListener", "removeAllListeners", "addListener"];
+    const prefix = topics.join("--@--");
+    const self = this;
+    return fns.reduce((acc, fn) => {
+      acc[fn] = function(e, ...args) {
+        let result = self[fn](prefix + "--:--" + e, ...args);
+        return result === self ? acc : result;
+      };
+      return acc;
+    }, {});
+  }
+  emitTo(topics, event, ...args) {
+    const performed = new Set;
+    this.eventNames().map((event2) => [event2, ...event2.split("--:--")]).filter(([, , topicEvent]) => event === topicEvent).filter(([, topicKey]) => {
+      const subscribedTopics = topicKey.split("--@--");
+      return subscribedTopics.some((topic) => topics.includes(topic));
+    }).forEach(([eventName]) => {
+      if (performed.has(eventName)) {
+        return;
+      }
+      performed.add(eventName);
+      this.emit(eventName, ...args);
+    });
+  }
+}
 
 class Docucache {
   store = new MemoryStore;
+  pendingUpdateTimeout;
+  pendingUpdates = {
+    create: new Set,
+    update: new Set,
+    delete: new Set
+  };
+  emitter = new DocEventEmitter;
   policies = {};
   getDocumentType;
   stats = new Map;
@@ -36,6 +76,33 @@ class Docucache {
     this.idFields = idFields;
     this.typeFields = typeFields;
     this.autoRemoveOprhans = autoRemoveOrphans;
+  }
+  notifyChanges(event, ref) {
+    this.pendingUpdates[event].add(ref);
+    if (this.pendingUpdateTimeout) {
+      return;
+    }
+    this.pendingUpdateTimeout = setTimeout(() => {
+      this.flushPendingUpdates();
+    }, 0);
+  }
+  flushPendingUpdates() {
+    clearTimeout(this.pendingUpdateTimeout);
+    this.pendingUpdateTimeout = null;
+    const order = ["create", "update", "delete"];
+    for (const event of order) {
+      const refs = this.pendingUpdates[event];
+      for (const ref of refs) {
+        this.emitter.emitTo([ref], event, ref);
+      }
+      refs.clear();
+    }
+    this.emitter.emit("flushed");
+  }
+  flushed() {
+    return new Promise((resolve) => {
+      this.emitter.once("flushed", resolve);
+    });
   }
   size() {
     return this.store.size();
@@ -79,7 +146,7 @@ class Docucache {
   }
   isDocumentOrRef(doc) {
     if (typeof doc === "string") {
-      const regex = /^(__ref:)?([^:]+):/;
+      const regex = /^(__ref:)?[^:]+:/;
       return regex.test(doc);
     }
     return !!this.getDocumentType(doc, this.typeFields, this.idFields);
@@ -122,19 +189,11 @@ class Docucache {
   }
   async add(document) {
     const id = this.getCacheId(document);
-    const type = this.getDocumentType(document, this.typeFields, this.idFields);
     const normalized = this.normalize(document);
     const current = await this.store.get(id);
     const newValue = Object.assign(current ?? {}, normalized);
     await this.store.set(id, newValue);
-    const stats = this.stats.get(type) ?? {
-      size: 0,
-      refs: new Set,
-      shape: this.getShape(normalized)
-    };
-    stats.size += 1;
-    stats.refs.add(id);
-    this.stats.set(type, stats);
+    this.notifyChanges(current ? "update" : "create", id);
   }
   async addAll(documents) {
     for (const document of documents) {
@@ -150,6 +209,15 @@ class Docucache {
       return subDocuments;
     }
     return [];
+  }
+  extractRefs(obj) {
+    if (!obj) {
+      return [];
+    }
+    if (typeof obj === "string" && obj.startsWith("__ref:")) {
+      return [obj];
+    }
+    return [...new Set(this.extract(obj).map(this.getCacheId.bind(this)))].sort((a, b) => a.localeCompare(b));
   }
   extractAndAdd(obj) {
     return this.addAll(this.extract(obj));
@@ -171,9 +239,10 @@ class Docucache {
     }
     return result;
   }
-  remove(obj) {
+  async remove(obj) {
     const id = this.resolveId(obj);
-    return this.store.delete(id);
+    await this.store.delete(id);
+    this.notifyChanges("delete", id);
   }
   removeIfOprhaned(id) {
   }
@@ -195,30 +264,17 @@ class Docucache {
     }, Array.isArray(obj) ? [] : {});
   }
   async denormalize(obj) {
-    if (typeof obj !== "object" || !obj) {
-      return obj;
+    if (typeof obj === "string" && obj.startsWith("__ref:")) {
+      return this.resolveRef(obj);
     }
-    const result = await Object.entries(obj).reduce(async (aacc, [key, value]) => {
-      const acc = await aacc;
-      if (typeof value === "string" && value.startsWith("__ref:")) {
-        const id = value.slice("__ref:".length);
-        acc[key] = await this.resolve(id) ?? NotCachedSymbol;
-      } else {
-        acc[key] = await this.denormalize(value);
+    if (typeof obj === "object") {
+      let result = Array.isArray(obj) ? [] : {};
+      for (const key in obj) {
+        result[key] = await this.denormalize(obj[key]);
       }
-      return acc;
-    }, Array.isArray(obj) ? Promise.resolve([]) : Promise.resolve({}));
-    if (Array.isArray(result)) {
-      return result.filter((item) => item !== NotCachedSymbol);
+      return result;
     }
-    if (typeof result === "object") {
-      for (const key in result) {
-        if (result[key] === NotCachedSymbol) {
-          result[key] = null;
-        }
-      }
-    }
-    return result;
+    return obj;
   }
   export() {
     return this.store.export();
@@ -251,7 +307,15 @@ class Docucache {
     }
     return result;
   }
+  subscription(doc) {
+    const refs = typeof doc === "string" ? [doc] : this.extractRefs(doc);
+    if (!refs?.length) {
+      throw new Error("Cannot subscribe to an object with no refs");
+    }
+    return this.emitter.bindTo(refs, doc);
+  }
 }
 export {
+  Missing,
   Docucache
 };
