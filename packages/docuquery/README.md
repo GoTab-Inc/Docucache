@@ -144,7 +144,6 @@ For subscriptions you might use a component like this:
 When creating operations you might choose to create a decorator so that existing functions can be extended without changing them very much
 
 ```marko
-
 class MyComponent {
 
   @query({
@@ -156,21 +155,26 @@ class MyComponent {
   }
 
   onMount() {
-    // operationKey must not be a function in order to use it as a subscription key
+    // If you want to access docs and snapshots from within a component or other class use the client directly   
+    // NOTE: operationKey must not be a function in order to use it as a subscription key
+    client.snapshot(this.listPets).then(snapshot => { /** */ });
+
+    // You can also subscribe to the snapshot if you want the data to stay synced
     this.subscribeTo(subscription(this.listPets))
-      .on('snapshot', () => {
-        // Do something with the snapshot
+      .on('snapshot', ({data: pets, context}) => {
+        this.state.isLoading = isLoading;
+        this.state.pets = pets;
       });
   }
 }
 
-<subscription|pets|=op(this.listPets)>
+<subscription|[pets, {isLoading}]|=op(this.listPets)>
   <ol>
     <for|pet| of=pets>
       <li> ${pet.name} </li>
     </for>
   </ol>
+  <button on-click('listPets') disabled=isLoading> Refresh </button>
 </subscription>
 
-<button on-click('listPets')> Refresh </button>
 ```
