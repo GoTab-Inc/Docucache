@@ -9,10 +9,9 @@ This library takes inspiration from apollo client, tanstack query, firebase/fire
 
 ## Usage
 
-Similar to tanstack-query, documents are fetched through queries and updated through mutations. Both queries and mutations can return a set of optimistic data to render to the UI while the actual async functionality is happening, thereby presenting a nice interface to the user.
+Similar to tanstack-query, documents are fetched through queries and updated through mutations. Both queries and mutations can return a set of optimistic data to render to the UI while the actual async functionality is happening, thereby presenting a nice interface to the user. This process is called an `operation`. 
 
-Creating queries and mutations is as simple as wrapping any existing async functions that return data with the `query` or `mutation` functions.
-This will then 
+Creating an operation is as simple as wrapping any existing async functions that return data with the `operation` function from a docuquery client, which shares most arguments with tanstack query with a few differences that enable the fine grained, detached, resource watching.
 
 ```ts
 import {createClient} from '@docucache/docuquery';
@@ -56,7 +55,22 @@ await addPet({type: 'Pet', name: 'Fido', breed: 'dog', id: '12345'});
 console.log(await listPets()); // [{type: 'Pet', name: 'Fido', breed: 'dog', id: '12345'}]
 ```
 
-Queries and mutations are themselves also documents and can also be manipulated. This paradigm is enough to implement local-first or entirely offline functionality.
+Documents can be updated imperatively and the changes will be reflected in the UI as well as the operations that reference the document, though in general it's better to create a mutation operation that will return these updates
+
+```js
+client.update(doc('Pet', '12345'), (pet) => {
+  pet.deceased = true;
+})
+```
+
+Operations are themselves also stored as documents and can also be manipulated outside of the context of an operation. This can be useful when extreme control over the underlying store is needed, but in general it's better to update your documents using operations.
+
+```js
+client.update(op('listPets'), ({data, context}) => {
+  data.pets.splice(1);
+  return data;
+});
+```
 
 Similar to firestore, in docuquery you _subscribe_ to Document references. The subscription's callback will be called with a snapshot of the document.
 
