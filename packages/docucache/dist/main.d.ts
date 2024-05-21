@@ -63,21 +63,13 @@ declare module "index" {
          */
         getCacheId?: (document: Document, type: string, idFields: string[]) => string | null;
         /**
-         * A function used to extract the type from a document. The default is to search for a type field in the document.
-         */
-        getType?: (document: Document, typeFields: string[]) => string;
-        /**
          * A function used to determine the id of a document. The default is to search for an id field in the document.
          */
         getId?: (document: Document, idFields: string[]) => string;
         /**
-         * The fields to use to determine the id of the document. The fields will be checked in order for a string value and the first one found will be used as the document's id.
+         * A function used to determine if a document matches this policy.
          */
-        idFields?: string[];
-        /**
-         * The fields used to determine the type of the document. The fields will be checked in order for a string value and the first one found will be used as the document's type.
-         */
-        typeFields?: string[];
+        isType?: (document: Document) => boolean | null | undefined;
         /**
          * If true, an error will be thrown if the document is not found in the cache.
          * If false, the document will be returned as Missing. Default is `false` when getDocuments is not set. Otherwise `true`.
@@ -98,11 +90,24 @@ declare module "index" {
     };
     type CachePolicies = Record<string, CachePolicy>;
     export type DocucacheInitOptions = {
-        getDocumentType?: (document: Document) => string;
+        /**
+         * A custom function to get the type of a document.
+         * If `null` is returned, the object is assumed to not be a document
+         * An error will be thrown if neither a string nor null is returned
+         */
+        getDocumentType?: (document: Document) => string | null;
+        /**
+         * A custom list of fields to use to extract the id from the document.
+         * These will be checked in order and the first non-null value will be used.
+         * The default is `['__id', '_id', 'id']`
+         */
         idFields?: string[];
+        /**
+         * A custom list of fields to use to extract the type from the document.
+         * The default is `['__typename', '_type']`
+         */
         typeFields?: string[];
         policies?: CachePolicies;
-        autoRemoveOrphans?: boolean;
     };
     type DocucacheWrapOptions = {
         optimistic?: (() => any) | object;
@@ -113,7 +118,7 @@ declare module "index" {
         onMissingValue?: (id: string) => Promise<any>;
     };
     export const Missing: unique symbol;
-    export class Docucache {
+    export class DocuStore {
         private store;
         private pendingUpdateTimeout;
         private pendingUpdates;
@@ -123,12 +128,12 @@ declare module "index" {
         private emitter;
         private policies;
         private getDocumentType;
-        private stats;
         private idFields;
         private typeFields;
-        private autoRemoveOprhans;
-        constructor({ getDocumentType, policies, typeFields, idFields, autoRemoveOrphans, }?: DocucacheInitOptions);
+        constructor({ getDocumentType, policies, typeFields, idFields, }?: DocucacheInitOptions);
         private notifyChanges;
+        private getTypeOfDocument;
+        private getPolicyForType;
         flushPendingUpdates(): void;
         flushed(): Promise<void>;
         /**
@@ -146,6 +151,7 @@ declare module "index" {
         private getShape;
         private isDocumentOrRef;
         private resolveType;
+        private getRef;
         /**
          * Resolve a string, ref, or document to an id
          */
@@ -195,11 +201,6 @@ declare module "index" {
          */
         remove(obj: Document | string): Promise<void>;
         /**
-         * Remove a
-         * @param id
-         */
-        private removeIfOprhaned;
-        /**
          * Clear this cache and reset it to an empty state.
          */
         clear(): Promise<void>;
@@ -231,5 +232,6 @@ declare module "index" {
         wrap<T>(fn: () => Promise<T>, options?: DocucacheWrapOptions): Promise<T>;
         subscription<T = any>(doc: any): EventEmitter<"update" | "create" | "delete", T>;
     }
+    export const Docucache: typeof DocuStore;
 }
 //# sourceMappingURL=main.d.ts.map

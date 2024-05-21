@@ -12,21 +12,13 @@ export type CachePolicy = {
    */
   getCacheId?: (document: Document, type: string, idFields: string[]) => string | null;
   /**
-   * A function used to extract the type from a document. The default is to search for a type field in the document.
-   */
-  getType?: (document: Document, typeFields: string[]) => string;
-  /**
    * A function used to determine the id of a document. The default is to search for an id field in the document.
    */
   getId?: (document: Document, idFields: string[]) => string;
   /**
-   * The fields to use to determine the id of the document. The fields will be checked in order for a string value and the first one found will be used as the document's id.
+   * A function used to determine if a document matches this policy.
    */
-  idFields?: string[];
-  /**
-   * The fields used to determine the type of the document. The fields will be checked in order for a string value and the first one found will be used as the document's type.
-   */
-  typeFields?: string[];
+  isType?: (document: Document) => boolean | null | undefined;
   /**
    * If true, an error will be thrown if the document is not found in the cache.
    * If false, the document will be returned as Missing. Default is `false` when getDocuments is not set. Otherwise `true`.
@@ -50,11 +42,25 @@ export type CachePolicy = {
 type CachePolicies = Record<string, CachePolicy>;
 
 export type DocucacheInitOptions = {
-  getDocumentType?: (document: Document) => string;
+  /**
+   * A custom function to get the type of a document.
+   * If `null` is returned, the object is assumed to not be a document
+   * An error will be thrown if neither a string nor null is returned
+   */
+  getDocumentType?: (document: Document) => string | null;
+  /**
+   * A custom list of fields to use to extract the id from the document.
+   * These will be checked in order and the first non-null value will be used.
+   * The default is `['__id', '_id', 'id']`
+   */
   idFields?: string[];
+  /**
+   * A custom list of fields to use to extract the type from the document.
+   * The default is `['__typename', '_type']`
+   */
   typeFields?: string[];
   policies?: CachePolicies;
-  autoRemoveOrphans?: boolean;
+  // autoRemoveOrphans?: boolean;
 }
 
 type DocucacheWrapOptions = {
@@ -73,7 +79,7 @@ const NotCachedSymbol = Symbol('NotCached');
 export const Missing = Symbol('MissingDocument');
 
 function defaultCacheIdGetter(document: Record<string, string>, type: string, idFields: string[]): string {
-  const id = idFields.map(field => document[field] ?? '').join('+');
+  const id = document[idFields.find(field => typeof document[field] !== 'undefined')];
 
   if(!type && !id) {
     return null;
@@ -87,17 +93,15 @@ function defaultCacheIdGetter(document: Record<string, string>, type: string, id
 }
 
 // TODO: this should take in the policies and use the policy's getType function?
-function defaultCacheTypeGetter(document: Record<string, string>, typeFields: string[], idFields: string[]): string {
-  const id = idFields.map(field => document[field] ?? '').join('+');
-  return typeFields.map(field => document[field]).find(Boolean) ?? id?.match(/^([^:]+):/)?.[1];
-}
-
-function toType(obj: any) {
-  if(typeof obj === 'string') {
-    return obj;
+function defaultDocumentTypeGetter(document: Record<string, string>, typeFields: string[], idFields: string[], policies: CachePolicies = {}): string | null {
+  for(const policy in policies) {
+    if(policies[policy].isType?.(document)) {
+      return policy;
+    }
   }
-  // TODO: Construct a util.inspect-like string representation of the object type
-  return Object.prototype.toString.call(obj).slice(8, -1);
+  // Finally, check the document for a type field
+  const id = document[idFields.find(field => typeof document[field] !== 'undefined')];
+  return typeFields.map(field => document[field]).find(Boolean) ?? id?.match(/^([^:]+):/)?.[1] ?? null;
 }
 
 // This is a topical event emitter that is used to optimize how updates are emitted
@@ -107,7 +111,7 @@ class DocEventEmitter extends EventEmitter {
    * Calling any of the methods on the returned object will assume the event only applies to the given topics
    * When emitTo is called from the main emitter, all listeners that have an event subscribed to at least one topic will be called
    */
-  bindTo<T = any>(topics: string[], ctx): EventEmitter<'create' | 'update' | 'delete', T> {
+  bindTo<T = any>(topics: string[]): EventEmitter<'create' | 'update' | 'delete', T> {
     const fns = ['on', 'once', 'off', 'emit', 'listeners', 'listenerCount', 'removeListener', 'removeAllListeners', 'addListener'];
     const prefix = topics.join('--@--');
     const self = this;
@@ -125,6 +129,7 @@ class DocEventEmitter extends EventEmitter {
    */
   emitTo(topics: string[], event: string, ...args: any[]) {
     const performed = new Set<string>();
+    // console.log(this.eventNames(), event, topics);
     this.eventNames()
       .map((event: string) => [event, ...event.split('--:--')])
       // Filter out event names that don't include the event type
@@ -144,7 +149,7 @@ class DocEventEmitter extends EventEmitter {
   }
 }
 
-export class Docucache {
+export class DocuStore {
 
   private store: Store = new MemoryStore();
 
@@ -163,33 +168,26 @@ export class Docucache {
 
   private policies: CachePolicies = {};
 
-  private getDocumentType: (document: any, typeFields: string[], idFields: string[]) => string;
-
-  // Holds statistics by type such as size, refs, 
-  private stats = new Map<string, any>();
+  private getDocumentType: (document: any, typeFields: string[], idFields: string[], policies: CachePolicies) => string | null;
 
   private idFields: string[];
 
   private typeFields: string[];
 
-  private autoRemoveOprhans: boolean;
-  
   constructor({
-    getDocumentType = defaultCacheTypeGetter,
+    getDocumentType = defaultDocumentTypeGetter,
     policies = {},
     typeFields = ['__typename', '_type'],
-    idFields = ['_id'],
-    autoRemoveOrphans = false,
+    idFields = ['__id', '_id', 'id'],
   } = {} as DocucacheInitOptions) {
     this.getDocumentType = getDocumentType;
     this.policies = policies;
     this.idFields = idFields;
     this.typeFields = typeFields;
-    this.autoRemoveOprhans = autoRemoveOrphans;
   }
 
   private notifyChanges(event: 'create' | 'update' | 'delete', ref: string) {
-    this.pendingUpdates[event].add(ref);
+    this.pendingUpdates[event].add(this.getRef(ref));
     if(this.pendingUpdateTimeout) {
       return;
     }
@@ -197,6 +195,18 @@ export class Docucache {
     this.pendingUpdateTimeout = setTimeout(() => {
       this.flushPendingUpdates();
     }, 0);
+  }
+
+  private getTypeOfDocument(document: Document) {
+    const type = this.getDocumentType(document, this.typeFields, this.idFields, this.policies);
+    if(type !== null && typeof type !== 'string') {
+      throw new Error(`Expected type returned to be a string or null but received ${type}`);
+    }
+    return type;
+  }
+
+  private getPolicyForType(type: string) {
+    return this.policies[type];
   }
 
   flushPendingUpdates() {
@@ -234,16 +244,16 @@ export class Docucache {
     if(!obj || Array.isArray(obj) || typeof obj !== 'object') {
       return false;
     }
-    return !!this.getDocumentType(obj, this.typeFields, this.idFields);
+    return !!this.getTypeOfDocument(obj);
   }
 
   /**
    * Given a document or object, try to determine the cacheId
    */
   private getCacheId(document: Document) {
-    const type = this.getDocumentType(document, this.typeFields, this.idFields);
-    const policy = this.policies[type];
-    return policy?.getCacheId?.(document, type, policy.idFields ?? this.idFields) 
+    const type = this.getTypeOfDocument(document);
+    const policy = this.getPolicyForType(type);
+    return policy?.getCacheId?.(document, type, this.idFields) 
       ?? defaultCacheIdGetter(document, type, this.idFields);
   }
 
@@ -283,7 +293,7 @@ export class Docucache {
       const regex = /^(__ref:)?[^:]+:/;
       return regex.test(doc);
     }
-    return !!this.getDocumentType(doc, this.typeFields, this.idFields);
+    return !!this.getTypeOfDocument(doc);
   }
 
   private resolveType(obj: Document | string) {
@@ -292,7 +302,17 @@ export class Docucache {
       const match = obj.match(regex);
       return match?.[2] ?? null;
     }
-    return this.getDocumentType(obj, this.typeFields, this.idFields);
+    return this.getTypeOfDocument(obj);
+  }
+
+  private getRef(obj: Document | string) {
+    if(typeof obj === 'string') {
+      if(obj.startsWith('__ref:')) {
+        return obj;
+      }
+      return `__ref:${obj}`;
+    }
+    return `__ref:${this.getCacheId(obj)}`;
   }
 
   /**
@@ -393,7 +413,7 @@ export class Docucache {
     }
     // TODO: this doesn't exactly return a ref, it returns a cacheId. Should it be a ref?
     return [...new Set<any>(this.extract(obj)
-      .map(this.getCacheId.bind(this)))]
+      .map(this.getRef.bind(this)))]
       .sort((a: string, b: string) => a.localeCompare(b));
   }
 
@@ -415,6 +435,7 @@ export class Docucache {
   async addAsDocument(obj: any, key: string) {
     await this.extractAndAdd(obj);
     await this.store.set(key, this.normalize(obj));
+    this.notifyChanges('update', key);
   }
 
   /**
@@ -438,14 +459,6 @@ export class Docucache {
     const id = this.resolveId(obj);
     await this.store.delete(id);
     this.notifyChanges('delete', id);
-  }
-
-  /**
-   * Remove a 
-   * @param id 
-   */
-  private removeIfOprhaned(id: string) {
-
   }
 
   /**
@@ -545,6 +558,8 @@ export class Docucache {
     if(!refs?.length) {
       throw new Error('Cannot subscribe to an object with no refs');
     }
-    return this.emitter.bindTo<T>(refs, doc);
+    return this.emitter.bindTo<T>(refs);
   }
 }
+// Backwards compat, remove soon
+export const Docucache = DocuStore;

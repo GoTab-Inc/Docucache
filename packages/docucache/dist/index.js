@@ -2,7 +2,7 @@
 import EventEmitter from "eventemitter3";
 import {MemoryStore} from "./stores/mem";
 var defaultCacheIdGetter = function(document, type, idFields) {
-  const id = idFields.map((field) => document[field] ?? "").join("+");
+  const id = document[idFields.find((field) => typeof document[field] !== "undefined")];
   if (!type && !id) {
     return null;
   }
@@ -11,9 +11,14 @@ var defaultCacheIdGetter = function(document, type, idFields) {
   }
   return [type, id].join(":");
 };
-var defaultCacheTypeGetter = function(document, typeFields, idFields) {
-  const id = idFields.map((field) => document[field] ?? "").join("+");
-  return typeFields.map((field) => document[field]).find(Boolean) ?? id?.match(/^([^:]+):/)?.[1];
+var defaultDocumentTypeGetter = function(document, typeFields, idFields, policies = {}) {
+  for (const policy in policies) {
+    if (policies[policy].isType?.(document)) {
+      return policy;
+    }
+  }
+  const id = document[idFields.find((field) => typeof document[field] !== "undefined")];
+  return typeFields.map((field) => document[field]).find(Boolean) ?? id?.match(/^([^:]+):/)?.[1] ?? null;
 };
 var NotCachedSymbol = Symbol("NotCached");
 var Missing = Symbol("MissingDocument");
@@ -22,7 +27,7 @@ class DocEventEmitter extends EventEmitter {
   constructor() {
     super(...arguments);
   }
-  bindTo(topics, ctx) {
+  bindTo(topics) {
     const fns = ["on", "once", "off", "emit", "listeners", "listenerCount", "removeListener", "removeAllListeners", "addListener"];
     const prefix = topics.join("--@--");
     const self = this;
@@ -49,7 +54,7 @@ class DocEventEmitter extends EventEmitter {
   }
 }
 
-class Docucache {
+class DocuStore {
   store = new MemoryStore;
   pendingUpdateTimeout;
   pendingUpdates = {
@@ -60,31 +65,37 @@ class Docucache {
   emitter = new DocEventEmitter;
   policies = {};
   getDocumentType;
-  stats = new Map;
   idFields;
   typeFields;
-  autoRemoveOprhans;
   constructor({
-    getDocumentType = defaultCacheTypeGetter,
+    getDocumentType = defaultDocumentTypeGetter,
     policies = {},
     typeFields = ["__typename", "_type"],
-    idFields = ["_id"],
-    autoRemoveOrphans = false
+    idFields = ["__id", "_id", "id"]
   } = {}) {
     this.getDocumentType = getDocumentType;
     this.policies = policies;
     this.idFields = idFields;
     this.typeFields = typeFields;
-    this.autoRemoveOprhans = autoRemoveOrphans;
   }
   notifyChanges(event, ref) {
-    this.pendingUpdates[event].add(ref);
+    this.pendingUpdates[event].add(this.getRef(ref));
     if (this.pendingUpdateTimeout) {
       return;
     }
     this.pendingUpdateTimeout = setTimeout(() => {
       this.flushPendingUpdates();
     }, 0);
+  }
+  getTypeOfDocument(document) {
+    const type = this.getDocumentType(document, this.typeFields, this.idFields, this.policies);
+    if (type !== null && typeof type !== "string") {
+      throw new Error(`Expected type returned to be a string or null but received ${type}`);
+    }
+    return type;
+  }
+  getPolicyForType(type) {
+    return this.policies[type];
   }
   flushPendingUpdates() {
     clearTimeout(this.pendingUpdateTimeout);
@@ -111,12 +122,12 @@ class Docucache {
     if (!obj || Array.isArray(obj) || typeof obj !== "object") {
       return false;
     }
-    return !!this.getDocumentType(obj, this.typeFields, this.idFields);
+    return !!this.getTypeOfDocument(obj);
   }
   getCacheId(document) {
-    const type = this.getDocumentType(document, this.typeFields, this.idFields);
-    const policy = this.policies[type];
-    return policy?.getCacheId?.(document, type, policy.idFields ?? this.idFields) ?? defaultCacheIdGetter(document, type, this.idFields);
+    const type = this.getTypeOfDocument(document);
+    const policy = this.getPolicyForType(type);
+    return policy?.getCacheId?.(document, type, this.idFields) ?? defaultCacheIdGetter(document, type, this.idFields);
   }
   getShape(obj) {
     if (typeof obj !== "object") {
@@ -149,7 +160,7 @@ class Docucache {
       const regex = /^(__ref:)?[^:]+:/;
       return regex.test(doc);
     }
-    return !!this.getDocumentType(doc, this.typeFields, this.idFields);
+    return !!this.getTypeOfDocument(doc);
   }
   resolveType(obj) {
     if (typeof obj === "string") {
@@ -157,7 +168,16 @@ class Docucache {
       const match = obj.match(regex);
       return match?.[2] ?? null;
     }
-    return this.getDocumentType(obj, this.typeFields, this.idFields);
+    return this.getTypeOfDocument(obj);
+  }
+  getRef(obj) {
+    if (typeof obj === "string") {
+      if (obj.startsWith("__ref:")) {
+        return obj;
+      }
+      return `__ref:${obj}`;
+    }
+    return `__ref:${this.getCacheId(obj)}`;
   }
   resolveId(obj) {
     if (typeof obj === "string") {
@@ -217,7 +237,7 @@ class Docucache {
     if (typeof obj === "string" && obj.startsWith("__ref:")) {
       return [obj];
     }
-    return [...new Set(this.extract(obj).map(this.getCacheId.bind(this)))].sort((a, b) => a.localeCompare(b));
+    return [...new Set(this.extract(obj).map(this.getRef.bind(this)))].sort((a, b) => a.localeCompare(b));
   }
   extractAndAdd(obj) {
     return this.addAll(this.extract(obj));
@@ -228,6 +248,7 @@ class Docucache {
   async addAsDocument(obj, key) {
     await this.extractAndAdd(obj);
     await this.store.set(key, this.normalize(obj));
+    this.notifyChanges("update", key);
   }
   async fromResult(fn, key) {
     const result = fn();
@@ -243,8 +264,6 @@ class Docucache {
     const id = this.resolveId(obj);
     await this.store.delete(id);
     this.notifyChanges("delete", id);
-  }
-  removeIfOprhaned(id) {
   }
   clear() {
     return this.store.clear();
@@ -312,10 +331,12 @@ class Docucache {
     if (!refs?.length) {
       throw new Error("Cannot subscribe to an object with no refs");
     }
-    return this.emitter.bindTo(refs, doc);
+    return this.emitter.bindTo(refs);
   }
 }
+var Docucache = DocuStore;
 export {
   Missing,
-  Docucache
+  Docucache,
+  DocuStore
 };

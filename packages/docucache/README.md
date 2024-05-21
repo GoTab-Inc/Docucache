@@ -1,30 +1,40 @@
-# @docucache/docucache
+# @docucache/docustore
 
-Cache arbitrarily nested JSON (eg from http responses) as flattened, normalized documents.
+Store arbitrarily nested JSON (eg from http responses) as flattened, normalized documents.
 
 Based heavily on https://www.apollographql.com/docs/react/caching/overview/#how-is-data-stored
 
-This library is the core for `@docucache/doculord` and `@docucache/documerge`.
+This is a core library in docusystem that powers fine-grained reactive updates.
 
 ## What is a document?
 
-A document is any js object in which a `cacheId` can be extracted. 
-The `cacheId` uniquely identifies a document in the cache and is usually constructed by concatenating a `type` with an `id`, but can be configured to be extracted in other ways as long as the id is universally unique.
+A document is any js object in which a `type` and `id` can be extracted. 
 
-Out of the box docucache supports getting the type from the following fields of an object:
+The `type` and `id` together uniquely identifies a document in the store and is necessary for normalizing the cache, subscribing to updates, and applying changes.
 
-- `__typename`/`_type`
-- `_id` when it's formatted like `[type]:[id]`. eg `User:123`
+With no configuration docustore supports getting the `type` from the following fields of an object:
 
-This can be configured by setting `idFields` and `typeFields` when constructing a DocuCache instance.
+- `__typename`
+- `_type`
+- `_id` when no `type` field exists and the _id is formatted like `[type]:[id]`. eg `User:123`
 
-By default the `cacheId` will look like `[type]:[id]`, but this can be overriden on a per-type basis using CachePolicies.
+Similarly the `id` is inferred from 
+
+- `id`
+- `_id`
+
+This behavior can be configured by setting `idFields` and `typeFields` when constructing the DocuStore instance, or if you prefer, set the `getDocumentType` function to set your own logic. 
+
+> [!NOTE] 
+> Policies may have an `isType` method as well.
+> Policies are checked in the order they're defined and the first to return `true` will match the type.
+> A policy's `isType` function takes precedence over the `getDocumentType` function.
 
 Examples of documents include:
 ```js
 [
   {
-    _type: 'User', // can also be __typename in order to support Graphql responses
+    _type: 'User', // or __typename in order to support Graphql responses
     _id: '123',
     user_name: 'John',
     age: 123
