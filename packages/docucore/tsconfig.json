@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "types": [],
+    "emitDeclarationOnly": true,
+    "declarationMap": true,
+    "outFile": "./dist/.ts",
+    "tsBuildInfoFile": ".tsbuildinfo",
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "target": "ESNext",
+    "moduleResolution": "node",
+    "allowJs": true,
+    "composite": true
+  },
+}
