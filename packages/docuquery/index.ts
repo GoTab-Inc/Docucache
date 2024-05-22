@@ -1,5 +1,5 @@
 // Combines tanstack query with docucache to provide a fine-grained reactive query system
-import {QueryClient, type FetchQueryOptions, type InvalidateQueryFilters, type InvalidateOptions} from '@tanstack/query-core';
+import {QueryClient, type FetchQueryOptions, type InvalidateQueryFilters, type InvalidateOptions, QueriesObserver, QueryObserver, type QueryOptions, type QueryObserverOptions} from '@tanstack/query-core';
 import {DocuStore, type DocucacheInitOptions } from '@docucache/docucache';
 
 const docOpKeySymbol = Symbol.for('__DocOpKey');
@@ -22,6 +22,7 @@ type OpFn<T extends any[], R> = ((...args: T) => Promise<R> | R) & {
 class DocuQueryClient {
   private queryClient: QueryClient;
   private store: DocuStore;
+  private observer: QueriesObserver;
   
   constructor(options: DocuQueryClientConfig = {}) {
     const {
@@ -31,6 +32,7 @@ class DocuQueryClient {
     } = options;
     this.store = store || new DocuStore(docucacheOptions);
     this.queryClient = queryClient || new QueryClient();
+    this.observer = new QueriesObserver(this.queryClient, []);
     this.init();
   }
 
@@ -39,6 +41,7 @@ class DocuQueryClient {
     this.queryClient
       .getQueryCache()
       .subscribe(({type, query: {queryKey, state}}) => {
+        // TODO: if you have staleTime set, will this cause the store to be updated with stale data in some scenarios?
         if(queryKey[0] !== 'op') {
           return;
         }
@@ -47,16 +50,25 @@ class DocuQueryClient {
         // We need to ensure that when any of those documents are updated, a notification is sent to the operation trigger as well
         // Perhaps the store needs another function to bind update events of documents together?
       });
+    // this.queryClient
+    //   .getMutationCache()
+    //   .subscribe(({type, mutation}) => {
+    //     if(queryKey[0] !== 'op') {
+    //       return;
+    //     }
+    //     this.store.addAsDocument(state, queryKey.join(':'));
+    //   });
   }
 
   operation<T extends any[], R>(config: DocuOperationConfig<T, R>) {
+    const observers = new QueriesObserver(this.queryClient, [{queryKey: [], queryFn: () => Promise.resolve(null)}]);
     const op: OpFn<T, R> = (...args: T) => {
       let operationKey = config.operationKey;
       if(typeof config.operationKey === 'function') {
         operationKey = config.operationKey(...args);
       }
-      operationKey = ['op', ...operationKey as ReadonlyArray<unknown>]
-      return this.queryClient.fetchQuery<R>({
+      operationKey = ['op', ...operationKey as ReadonlyArray<unknown>];
+      const options: QueryOptions<R, T> = {
         // meta: {},
         queryKey: operationKey,
         queryFn: async () => {
@@ -65,7 +77,7 @@ class DocuQueryClient {
             if(config?.invalidate) {
               const filters = 'queryKey' in config.invalidate ? config.invalidate : (config.invalidate as any).filters;
               const options = 'queryKey' in config.invalidate ? {} : (config.invalidate as any).options;
-              await this.queryClient.invalidateQueries(filters, options)
+              await this.queryClient.invalidateQueries(filters, options);
             }
             return result;
           } catch(err) {
@@ -73,7 +85,9 @@ class DocuQueryClient {
             throw err;
           }
         },
-      });
+      };
+      observers.setQueries([options as QueryObserverOptions]);
+      return this.queryClient.fetchQuery(options as FetchQueryOptions<R, T>);
     };
     op[docOpKeySymbol] = config.operationKey;
     return op;
