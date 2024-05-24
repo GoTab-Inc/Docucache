@@ -47,6 +47,7 @@ class DocuQueryClient {
     this.queryClient
       .getQueryCache()
       .subscribe(({type, query: {queryKey, state}}) => {
+        // TODO: if you have staleTime set, will this cause the store to be updated with stale data in some scenarios?
         if(queryKey[0] !== 'op') {
           return;
         }
@@ -55,6 +56,14 @@ class DocuQueryClient {
         // We need to ensure that when any of those documents are updated, a notification is sent to the operation trigger as well
         // Perhaps the store needs another function to bind update events of documents together?
       });
+    // this.queryClient
+    //   .getMutationCache()
+    //   .subscribe(({type, mutation}) => {
+    //     if(queryKey[0] !== 'op') {
+    //       return;
+    //     }
+    //     this.store.addAsDocument(state, queryKey.join(':'));
+    //   });
   }
 
   operation<T extends any[], R>(config: DocuOperationConfig<T, R>) {
