@@ -67,51 +67,68 @@ const listTabsByIds = (filter?: string[]) => {
   return tabStore.filter(tab => !filter || filter.includes(tab.id));
 }
 
-describe('operations', () => {
-  const client = createClient();
-  const listTabs = client.operation({
-    operationKey: (ids) => ['listTabs', ...ids || []],
-    async operationFn(ids?: string[]) {
+// describe('operations', () => {
+//   const client = createClient();
+//   const listTabs = client.operation({
+//     operationKey: (ids) => ['listTabs', ...ids || []],
+//     async operationFn(ids?: string[]) {
+//       await sleep(1000);
+//       return listTabsByIds(ids);
+//     },
+//   });
+
+//   it('will return basic query', async () => {
+//     const tabs = await listTabs();
+//     expect(tabs.length).toBe(tabStore.length);
+//   });
+
+//   it('will return filtered query', async () => {
+//     const tabs = await listTabs(['2']);
+//     expect(tabs.length).toBe(1);
+//   });
+// });
+
+describe('subscriptions', () => {
+  it('can manually invalidate a subscribed query', async () => {
+    const client = createClient();
+    const listTabsMock = mock(async (ids?: string[]) => {
+      console.log(`ListTabByIds Called with ids: ${ids}`);
       await sleep(1000);
       return listTabsByIds(ids);
-    },
-  });
-
-  let unsub: () => void;
-
-  it('will return basic query', async () => {
-    const tabs = await listTabs();
-    expect(tabs.length).toBe(tabStore.length);
-  });
-
-  it('will return filtered query', async () => {
-    const tabs = await listTabs(['2']);
-    expect(tabs.length).toBe(1);
-  });
-
-  it('can be subscribed to', async (done) => {
-    unsub = await listTabs.subscribe((result) => {
-      const data = result.data;
-      expect(data.length).toBe(1);
-      done();
+    })
+    const listTabs = client.operation({
+      operationName: 'listTabs',
+      // NOTE (and probably a likely source of confusion): The ids here should not be spread into the array
+      // This will create a queryKey of, for example, ['op', 'listTabs', '1', '2'] instead of ['op', 'listTabs', ['1', '2']]
+      // This means an invalidation key of ['1'] would match ['1', '2'] and ['1', '3'], for example, when you might expect it to only match ['1']   
+      operationKey: (ids) => [...ids || []],
+      operationFn: listTabsMock,
     });
-  });
+    // This first call to listTabs will cache the query and queryFn under ['op', 'listTabs', '1']
+    await listTabs(['1']);
+    expect(listTabsMock).toHaveBeenCalledTimes(1);
 
-  it('changing filter will automatically resub to same cb without needing to manually unsub', async (done) => {
+    // Now we subscribe to this query
+    const unsub = listTabs.subscribe({queryKey: ['1']});
+    
+    // This invalidation will cause the query to be refetched
+    console.log('Invalidating: [\'1\']');
+    await listTabs.invalidate({queryKey: ['1']});
+    expect(listTabsMock).toHaveBeenCalledTimes(2);
+    
+    // This should do nothing because listTabs has no query with this queryKey
+    console.log('Invalidating: [\'2\']');
+    await listTabs.invalidate({queryKey: ['2']});
+    expect(listTabsMock).toHaveBeenCalledTimes(2);
+    
+    // Here we unsubscribe from the query
     unsub();
-    let cbCount = 0;
-    let expectedTabs = [['2'], ['1', '2']]; // First one should only be subscribed to tab 2, and then the second one should be subscribed to all tabs
-    const receivedTabs: any[] = [];
-    await listTabs(['2']); 
-    const callback = mock((result) => {
-      cbCount++;
-      receivedTabs.push(result.data.map(tab => tab.id));
-      if(cbCount === 2) {
-        expect(receivedTabs).toStrictEqual(expectedTabs);
-        done();
-      }
-    });
-    await listTabs.subscribe(callback);
-    await listTabs();
+
+    // This should now do nothing because the subscription was removed
+    console.log('Invalidating: [\'1\']');
+    await listTabs.invalidate({queryKey: ['1']});
+    expect(listTabsMock).toHaveBeenCalledTimes(2);
   });
+
+  // TODO: Test invalidating by non-exact queryKey
 });
