@@ -1,5 +1,11 @@
 // Combines tanstack query with docucache to provide a fine-grained reactive query system
-import {QueryClient, type FetchQueryOptions, type InvalidateQueryFilters, type InvalidateOptions, QueriesObserver, QueryObserver, type QueryOptions, type QueryObserverOptions} from '@tanstack/query-core';
+import {
+  QueryClient,
+  type FetchQueryOptions,
+  type InvalidateQueryFilters,
+  type InvalidateOptions,
+  type QueryFilters,
+} from '@tanstack/query-core';
 import {DocuStore, type DocucacheInitOptions } from '@docucache/docucache';
 
 const docOpKeySymbol = Symbol.for('__DocOpKey');
@@ -9,20 +15,31 @@ type DocuQueryClientConfig = {
   store?: DocuStore;
 } & DocucacheInitOptions;
 
-type DocuOperationConfig<T extends any[], R> = {
+type DocuOperationConfig<R, T extends any[]> = {
   operationFn: (...args: T) => R;
-  operationKey: ReadonlyArray<unknown> | ((...args: T) => ReadonlyArray<unknown>);
+  operationName?: string;
+  operationKey?: ReadonlyArray<unknown> | ((...args: T) => ReadonlyArray<unknown>);
   invalidate?: {filters: InvalidateQueryFilters, options?: InvalidateOptions} | InvalidateQueryFilters,
 } & Omit<FetchQueryOptions<unknown, unknown>, 'queryKey' | 'queryFn'>;
 
-type OpFn<T extends any[], R> = ((...args: T) => Promise<R> | R) & {
+type DocuQuerySubscriptionFilters = {
+  queryKey?: ReadonlyArray<unknown>;
+} & Omit<QueryFilters, 'queryKey'>;
+
+type DocuQueryInvalidateOperationFilters = {
+  queryKey: ReadonlyArray<unknown>;
+} & Omit<InvalidateQueryFilters, 'queryKey'>;
+
+type OpFn<R, T extends any[]> = ((...args: T) => Promise<R>) & {
   [docOpKeySymbol]?: ReadonlyArray<unknown> | ((...args: T) => ReadonlyArray<unknown>);
+  watchInvalidations: (filters?: DocuQuerySubscriptionFilters, callback?: (data: any) => void) => () => void;
+  invalidate: (filters: DocuQueryInvalidateOperationFilters) => Promise<void>;
+  subscribe: (filters: DocuQuerySubscriptionFilters, callback: (data: any) => void) => () => void;
 };
 
 class DocuQueryClient {
   private queryClient: QueryClient;
-  private store: DocuStore;
-  private observer: QueriesObserver;
+  store: DocuStore;
   
   constructor(options: DocuQueryClientConfig = {}) {
     const {
@@ -32,7 +49,6 @@ class DocuQueryClient {
     } = options;
     this.store = store || new DocuStore(docucacheOptions);
     this.queryClient = queryClient || new QueryClient();
-    this.observer = new QueriesObserver(this.queryClient, []);
     this.init();
   }
 
@@ -49,6 +65,8 @@ class DocuQueryClient {
         // TODO: the documents here are now also bound to the query
         // We need to ensure that when any of those documents are updated, a notification is sent to the operation trigger as well
         // Perhaps the store needs another function to bind update events of documents together?
+        // This would save a list of refs to a Document such that when a ref is updated, the store also notifies all of its guardians 
+        // this.store.bindDocuments(queryKey.join(':'), store.extractDocuments(state))
       });
     // this.queryClient
     //   .getMutationCache()
@@ -60,37 +78,97 @@ class DocuQueryClient {
     //   });
   }
 
-  operation<T extends any[], R>(config: DocuOperationConfig<T, R>) {
-    const observers = new QueriesObserver(this.queryClient, [{queryKey: [], queryFn: () => Promise.resolve(null)}]);
-    const op: OpFn<T, R> = (...args: T) => {
-      let operationKey = config.operationKey;
-      if(typeof config.operationKey === 'function') {
-        operationKey = config.operationKey(...args);
-      }
-      operationKey = ['op', ...operationKey as ReadonlyArray<unknown>];
-      const options: QueryOptions<R, T> = {
-        // meta: {},
-        queryKey: operationKey,
-        queryFn: async () => {
-          try {
-            const result = await config.operationFn(...args);
-            if(config?.invalidate) {
-              const filters = 'queryKey' in config.invalidate ? config.invalidate : (config.invalidate as any).filters;
-              const options = 'queryKey' in config.invalidate ? {} : (config.invalidate as any).options;
-              await this.queryClient.invalidateQueries(filters, options);
-            }
-            return result;
-          } catch(err) {
-            // TODO: implement rollback? This might need to be in the queryClient subscription instead??
-            throw err;
+  operation<T extends any[], R>(config: DocuOperationConfig<R, T>) {
+    const {
+      operationFn,
+      operationKey,
+      operationName = operationFn?.name,
+      ...queryOptions
+    } = config;
+    const op = (...args: T) => {
+      const querySubKeys = typeof operationKey === 'function' 
+        ? operationKey(...args) 
+        : operationKey ?? [];
+      const queryKey = ['op', operationName, ...querySubKeys];
+      const queryFn = async () => {
+        try {
+          const result = await config.operationFn(...args);
+          if(config?.invalidate) {
+            const filters = 'queryKey' in config.invalidate ? config.invalidate : (config.invalidate as any).filters;
+            const options = 'queryKey' in config.invalidate ? {} : (config.invalidate as any).options;
+            await this.queryClient.invalidateQueries(filters, options)
           }
-        },
+          return result;
+        } catch(err) {
+          // TODO: implement rollback? This might need to be in the queryClient subscription instead??
+          throw err;
+        }
       };
-      observers.setQueries([options as QueryObserverOptions]);
-      return this.queryClient.fetchQuery(options as FetchQueryOptions<R, T>);
+      
+      return this.queryClient.fetchQuery({
+        ...queryOptions,
+        meta: {operationName, operationKey},
+        queryKey,
+        queryFn,
+      });
     };
-    op[docOpKeySymbol] = config.operationKey;
-    return op;
+    op[docOpKeySymbol] = (Array.isArray(operationKey) 
+      ? [operationName, ...operationKey] 
+      : [operationName]) as ReadonlyArray<unknown>;
+    // When a query is invalidated we will fetch the query again. Note that this allows you to subscribe to multiple queries
+    // TODO: should this allow options to be passed in to query.fetch?
+    op.watchInvalidations = (filters?: DocuQuerySubscriptionFilters, callback?: (data: any) => void) => {
+      const queryKey = ['op', operationName, ...filters?.queryKey ?? []];
+      // It's up to the end user to properly subscribe and unsubscribe from queries when they're no longer needed in order to avoid memory leaks
+      // or causing removed components from being updated
+      const unsub = this.queryClient
+        .getQueryCache()
+        .subscribe(async (event) => {
+          // When a query is invalidated we re-run the query
+          switch(event.type) {
+            case 'updated':
+              if(event.action.type !== 'invalidate') {
+                return;
+              }
+              break;
+            default:
+              return;
+          }
+          const {query} = event;
+          // This is a little trick to check if the query that was invalidated is one of the queries we subscribed to
+          // We default to using the 'exact' option to ensure that the queryKey is an exact match, but this can be overridden
+          if(!this.queryClient.getQueryCache().findAll({exact: true, ...filters, queryKey}).includes(query)) {
+            return;
+          }
+          const data = await query.fetch();
+          callback?.(data);
+        });
+      return () => {
+        // We might do other stuff here, not sure yet
+        unsub();
+      }
+    };
+    op.invalidate = (filters: InvalidateQueryFilters) => {
+      return this.queryClient.invalidateQueries({
+        // We default to using the 'exact' option to ensure that the queryKey is an exact match, but this can be overridden
+        exact: true,
+        ...filters,
+        queryKey: ['op', operationName, ...filters.queryKey as readonly unknown[]],
+      });
+    };
+    op.subscribe = (filters: DocuQuerySubscriptionFilters, callback: (data: any) => void) => {
+      const unsubscribe = this.subscribe(['op', operationName, ...filters?.queryKey ?? []], callback);
+      const unwatch = op.watchInvalidations(filters);
+      return () => {
+        unsubscribe();
+        unwatch();
+      }
+    };
+    return op as OpFn<R, T>;
+  }
+
+  invalidate(filters?: InvalidateQueryFilters) {
+    return this.queryClient.invalidateQueries(filters);
   }
 
   snapshot(doc: any) {
@@ -99,10 +177,11 @@ class DocuQueryClient {
   }
 
   subscription<T = any>(doc: any) {
-    return this.store.subscription(doc);
+    return this.store.subscription<T>(doc);
   }
 
   private getOperationKey(op: OpFn<any, any> | string): ReadonlyArray<unknown> | null {
+    // TODO: we may want to deterministically generate the key?
     if(Array.isArray(op)) {
       return op;
     }
@@ -124,7 +203,7 @@ class DocuQueryClient {
   subscribe<T = any>(doc: any, callback: (doc: T) => void) {
     const opKey = this.getOperationKey(doc);
     const subscriptionRef = opKey ? `__ref:${opKey.join(':')}` : doc;
-    const subscription = this.store.subscription(subscriptionRef);
+    const subscription = this.store.subscription<T>(subscriptionRef);
     const callbackFn = async () => {
       // Always retrieve the latest snapshot of the document
       const snapshot = await this.snapshot(subscriptionRef);
